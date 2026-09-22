@@ -1,0 +1,41 @@
+# System Audio Subtitle — 釘死版本（見 ARCHITECTURE.md §16 風險：CUDA/cuDNN 版本相依）
+# Python 3.13 / win_amd64 專用。用 `pip install -r requirements.txt` 安裝。
+
+# --- 音訊擷取 (PROCESS 1: audio-service) ---
+PyAudioWPatch==0.2.12.8        # WASAPI loopback (Tier 1)
+numpy==2.2.1
+scipy==1.15.1                  # 重採樣 (polyphase resample)
+soundfile==0.13.1
+onnxruntime==1.20.1            # Silero VAD 推論後端 (CPU)
+
+# --- 推論 (PROCESS 2: inference-service) ---
+faster-whisper==1.2.1
+ctranslate2==4.8.2             # faster-whisper 與 NLLB 共用的推論後端
+# ctranslate2 4.8.2 在 Windows 上要靠這兩個 pip 套件提供 cuBLAS/cuDNN DLL，
+# 不需要另外裝完整 CUDA Toolkit。DLL 路徑由 scripts/setup_models.py 或
+# runtime 啟動時注入 PATH（見 scripts/probe_gpu.py）。
+nvidia-cublas-cu12==12.6.4.1
+nvidia-cudnn-cu12==9.5.1.17
+torch==2.14.0                  # 僅 scripts/setup_models.py 轉換模型用，CPU 版即可，非即時路徑
+transformers==4.57.6           # NLLB tokenizer / 模型轉換用（非即時路徑）
+sentencepiece==0.2.2            # NLLB tokenizer 依賴
+
+# --- 跨進程通訊與生命週期 (runtime/) ---
+pyzmq==26.2.0
+
+# --- Gateway (PROCESS 3 後端) ---
+fastapi==0.118.0
+uvicorn[standard]==0.34.0
+websockets==14.1
+
+# --- UI (PROCESS 3 前端) ---
+PySide6==6.11.2
+
+# --- 設定與工具 ---
+PyYAML==6.0.2
+python-ulid==2.7.0             # Utterance.utt_id
+comtypes==1.4.8                # Spike B: Process Loopback COM 介面
+
+# --- 開發 / 測試 ---
+pytest==8.3.4
+pytest-asyncio==0.25.2
