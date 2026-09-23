@@ -19,9 +19,9 @@ pytestmark = pytest.mark.slow
 def test_start_all_launches_real_processes() -> None:
     sup = Supervisor(
         [
-            ManagedProcess("audio", "audio.service"),
-            ManagedProcess("inference", "inference.service"),
-            ManagedProcess("gateway", "gateway.server"),
+            ManagedProcess("audio", "runtime._test_stub_service"),
+            ManagedProcess("inference", "runtime._test_stub_service"),
+            ManagedProcess("gateway", "runtime._test_stub_service"),
         ]
     )
     sup.start_all()
@@ -47,7 +47,7 @@ def test_crash_triggers_automatic_restart(monkeypatch: pytest.MonkeyPatch) -> No
         [
             ManagedProcess(
                 "flaky",
-                "audio.service",
+                "runtime._test_stub_service",
                 restart_policy=RestartPolicy(initial_delay_s=restart_delay_s, max_delay_s=2.0),
             )
         ],
@@ -78,7 +78,7 @@ def test_stop_all_prevents_pending_restart() -> None:
             [
                 ManagedProcess(
                     "flaky",
-                    "audio.service",
+                    "runtime._test_stub_service",
                     restart_policy=RestartPolicy(initial_delay_s=3.0),
                 )
             ],

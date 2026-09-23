@@ -173,6 +173,39 @@ class RingBufferReader:
     def read_total(self) -> int:
         return self._read_total
 
+    def peek(self, start_sample: int, end_sample: int) -> np.ndarray:
+        """讀取 `[start_sample, end_sample)` 這個絕對樣本範圍，**不影響**
+        `read()` 的循序游標。
+
+        給需要重複讀同一段還在成長中音訊的呼叫端用——典型情境是
+        inference-service 的暫定稿：同一個 utterance 每隔一段時間要把
+        「從句子開始到現在」整段重新拿去解碼，這不是「消耗掉就沒了」的
+        串流讀取，是「範圍還在，但範圍的終點一直往後長」的隨機讀取，
+        跟 `read()` 的語意完全不同，所以另外開一個方法，不要混在一起。
+
+        如果 `start_sample` 已經被覆寫掉（比緩衝裡目前最舊的有效樣本還舊），
+        回傳的資料會從最舊的有效樣本開始算（可能比要求的範圍短）——呼叫端
+        要自己檢查回傳長度，這種情況通常代表 inference 跟不上背壓已經很嚴重
+        （見 ARCHITECTURE.md §11 降級階梯），不是這支函式該處理的事。
+        """
+        if end_sample <= start_sample:
+            return np.empty(0, dtype=np.float32)
+
+        write_total = int(self._header[0])
+        end_sample = min(end_sample, write_total)
+        oldest_valid = max(0, write_total - self.capacity)
+        start_sample = max(start_sample, oldest_valid)
+        if end_sample <= start_sample:
+            return np.empty(0, dtype=np.float32)
+
+        n = end_sample - start_sample
+        start_idx = start_sample % self.capacity
+        end_idx = start_idx + n
+        if end_idx <= self.capacity:
+            return self._data[start_idx:end_idx].copy()
+        first_part = self.capacity - start_idx
+        return np.concatenate([self._data[start_idx:], self._data[: end_idx - self.capacity]])
+
     def close(self) -> None:
         self._shm.close()
 

@@ -6,8 +6,11 @@ PyAudioWPatch==0.2.12.8        # WASAPI loopback (Tier 1)
 numpy==2.2.1
 scipy==1.15.1                  # 重採樣 (polyphase resample)
 soundfile==0.13.1
-onnxruntime==1.20.1            # Silero VAD 推論後端 (CPU)
-silero-vad==6.2.2               # VAD 模型 + Python 封裝
+onnxruntime==1.20.1             # Silero VAD 推論後端 (CPU)
+# 注意：silero-vad 這個 pip 套件本身不是執行期依賴——它的 metadata 會強制
+# 把 torch 降到 <2.10（跟下面釘死的 torch==2.14.0 衝突），而且我們只需要
+# 它 wheel 裡的 .onnx 模型檔，不需要它的 Python 封裝（audio/vad.py 直接用
+# onnxruntime 呼叫）。模型取得方式見 scripts/setup_models.py。
 
 # --- 推論 (PROCESS 2: inference-service) ---
 faster-whisper==1.2.1

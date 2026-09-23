@@ -156,6 +156,82 @@ def test_writer_never_blocks_regardless_of_reader_speed(rb_name: str) -> None:
         writer.unlink()
 
 
+def test_peek_reads_range_without_affecting_sequential_read(rb_name: str) -> None:
+    writer = RingBufferWriter(rb_name, capacity_samples=100, create=True)
+    try:
+        reader = RingBufferReader(rb_name, capacity_samples=100)
+        try:
+            writer.write(np.arange(20, dtype=np.float32))
+
+            peeked = reader.peek(5, 15)
+            np.testing.assert_array_equal(peeked, np.arange(5, 15, dtype=np.float32))
+
+            # peek 不該動到 read() 的游標——read() 應該還是從 0 開始讀到全部
+            out, overrun = reader.read()
+            assert overrun is None
+            np.testing.assert_array_equal(out, np.arange(20, dtype=np.float32))
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+        writer.unlink()
+
+
+def test_peek_repeated_call_sees_growth(rb_name: str) -> None:
+    """暫定稿的典型用法：同一段範圍隨著音訊持續寫入而變長，重複 peek 要看到成長。"""
+    writer = RingBufferWriter(rb_name, capacity_samples=100, create=True)
+    try:
+        reader = RingBufferReader(rb_name, capacity_samples=100)
+        try:
+            writer.write(np.arange(10, dtype=np.float32))
+            first = reader.peek(0, 100)  # 要求超過目前已寫入的範圍
+            np.testing.assert_array_equal(first, np.arange(10, dtype=np.float32))
+
+            writer.write(np.arange(10, 15, dtype=np.float32))
+            second = reader.peek(0, 100)
+            np.testing.assert_array_equal(
+                second, np.concatenate([np.arange(10, dtype=np.float32), np.arange(10, 15, dtype=np.float32)])
+            )
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+        writer.unlink()
+
+
+def test_peek_clamps_to_oldest_valid_when_start_overwritten(rb_name: str) -> None:
+    """要求的起點已經被覆蓋掉：回傳從「目前緩衝裡最舊的有效樣本」開始算。"""
+    capacity = 10
+    writer = RingBufferWriter(rb_name, capacity_samples=capacity, create=True)
+    try:
+        reader = RingBufferReader(rb_name, capacity_samples=capacity)
+        try:
+            writer.write(np.arange(25, dtype=np.float32))  # 只有 15..24 還在緩衝裡
+
+            out = reader.peek(0, 25)  # 要求從 0 開始，但 0..14 早就被蓋掉了
+            np.testing.assert_array_equal(out, np.arange(15, 25, dtype=np.float32))
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+        writer.unlink()
+
+
+def test_peek_empty_range_returns_empty(rb_name: str) -> None:
+    writer = RingBufferWriter(rb_name, capacity_samples=50, create=True)
+    try:
+        reader = RingBufferReader(rb_name, capacity_samples=50)
+        try:
+            writer.write(np.arange(10, dtype=np.float32))
+            assert len(reader.peek(5, 5)) == 0  # start == end
+            assert len(reader.peek(8, 3)) == 0  # end < start
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+        writer.unlink()
+
+
 # --- 跨進程整合測試 ---
 
 

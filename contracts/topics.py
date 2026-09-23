@@ -23,6 +23,14 @@ INFERENCE_DEGRADE_LEVEL = "inference.degrade_level"  # DegradeLevel 變化通知
 CONTROL_AUDIO_CAPTURE_TARGET = "control.audio.capture_target"  # UI → audio-service
 CONTROL_LANGPACK_RELOAD = "control.inference.langpack_reload"  # UI → inference-service
 
+# --- shared_memory 環形緩衝（見 audio/ringbuffer.py）---
+# audio-service 是唯一的建立者（create=True），inference-service attach
+# 進來（create=False）。名稱、容量兩邊都要一致，所以放在 contracts 這層。
+AUDIO_RING_BUFFER_NAME = "sas-audio-pcm"
+AUDIO_RING_BUFFER_SAMPLE_RATE = 16000
+AUDIO_RING_BUFFER_SECONDS = 30  # 留 30 秒緩衝：足夠涵蓋 12s 強制斷句上限 + 餘裕
+AUDIO_RING_BUFFER_CAPACITY_SAMPLES = AUDIO_RING_BUFFER_SAMPLE_RATE * AUDIO_RING_BUFFER_SECONDS
+
 # --- ZeroMQ endpoint 位址 ---
 # 一律用 tcp://127.0.0.1，不用 ipc://：libzmq 的 ipc:// transport 在 Windows 上
 # 支援度不一致（依編譯選項而定），tcp://127.0.0.1 才是 Windows 上唯一穩定可靠的
