@@ -23,7 +23,7 @@
 | 匯流排 | `runtime/bus.py`（ZeroMQ PUB/SUB + REQ/REP）、`runtime/clock.py` |
 | 骨架 | `runtime/supervisor.py` 能拉起 / 監看 / 重啟三個空進程 |
 
-### Spike A — 延遲可行性（半天）
+### Spike A — 延遲可行性（半天）✅ 已完成
 
 不接任何管線，直接量：讀一個 1 秒 wav，`faster-whisper large-v3` int8_float16
 在 4070 上 `beam=1` 與 `beam=5` 各跑 50 次。
@@ -31,7 +31,11 @@
 > **驗收**：beam=1 的 p95 < 250ms。若不達標，當下就要改選 `distil-large-v3`
 > 或下修暫定稿頻率，而不是等到 M5 才發現延遲預算是空中樓閣。
 
-### Spike B — Process Loopback 可行性（1～2 天）★ 最高風險
+**結果**：暫定稿 beam=1 p95 229ms（達標）；定稿 beam=5 典型長度 p95 352ms（達標）。
+RTF 只有 0.04-0.05，GPU 完全不是瓶頸。詳細數字與踩到的兩個 Windows DLL/symlink
+坑見 ARCHITECTURE.md §10。`scripts/bench_latency.py` 已可重跑。
+
+### Spike B — Process Loopback 可行性（1～2 天）★ 最高風險 ✅ 已完成
 
 用 `ctypes` 呼叫 `ActivateAudioInterfaceAsync` + `AUDIOCLIENT_ACTIVATION_PARAMS`，
 目標只有一個：**對 chrome.exe 下 INCLUDE_TARGET_PROCESS_TREE，能不能拿到非靜音的 PCM。**
@@ -39,6 +43,22 @@
 > **驗收**：能存出一個聽得到瀏覽器聲音、且**聽不到同時播放的其他 App 聲音**的 wav。
 > 失敗的話，Tier 2 整段砍掉，M4 改為「引導使用者用 VB-CABLE」，架構不需要改
 > —— 這正是 `CaptureBackend` 抽象存在的理由。
+
+**結果：可行，且已用真實音訊驗證隔離性。** `scripts/spike_b_process_loopback.py`
+完整跑通「呼叫 ActivateAudioInterfaceAsync → IAudioClient → IAudioCaptureClient
+輪詢」全鏈路。測試方式：兩個獨立 PowerShell 行程同時播放不同音訊（語音 /
+440Hz 純音），分別鎖定兩個 PID 擷取，結果乾淨對應各自的音源、互不污染
+（數字見 ARCHITECTURE.md §6）。
+
+過程中踩了三個坑，都已修好並寫進 §6：(1) 必須用 MTA、不能用 STA，否則
+`ActivateAudioInterfaceAsync` 同步呼叫就直接失敗；(2) 完成回呼物件必須
+實作 `IAgileObject`，否則背景執行緒呼叫回來時失敗，且錯誤訊息完全看不出
+是 marshaling 問題；(3) comtypes 對 HRESULT 方法的 `[out]` 參數要當回傳值
+接，不能用 C 風格 `byref` 硬填。這三點排查花了本次 Spike 大部分時間，
+記錄下來讓 M4 正式實作時直接照做，不用重踩。
+
+**尚未驗證、留給 M4**：瀏覽器分頁（多行程樹）場景、目標行程結束後的
+串流重建、`AvSetMmThreadCharacteristics` 執行緒優先權調整對抖動的實際影響。
 
 ### Spike C — DRM 相容性表（半天）
 

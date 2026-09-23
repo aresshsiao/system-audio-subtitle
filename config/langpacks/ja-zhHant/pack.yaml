@@ -1,0 +1,29 @@
+# 語言包：日文 → 繁體中文
+schema_version: 1
+id: ja-zhHant
+display_name: "日文 → 繁體中文"
+version: "1.0.0"
+
+src_lang: ja
+tgt_lang: zh-Hant
+
+asr:
+  engine: faster-whisper
+  model: large-v3
+  hallucination_blacklist: hallucination.txt
+
+stabilizer:
+  granularity: char   # 日文無空格分詞，前綴比對必須用字元層級（見 §8）
+
+policy:
+  draft_translate: false   # SOV 語序，暫定稿先翻常常整句意思反過來（見 §8）
+  line_break: phrase
+
+translate:
+  local_engine: ct2-nllb
+  src_code: jpn_Jpan
+  tgt_code: zho_Hant
+  cloud_engine: llm-api
+
+typography:
+  font_hint: "Noto Sans TC"

@@ -1,0 +1,20 @@
+# 虛擬環境與套件
+.venv/
+__pycache__/
+*.pyc
+
+# 模型權重（用 scripts/setup_models.py 下載，不進版控）
+models/
+
+# 測試/工具快取
+.pytest_cache/
+.ruff_cache/
+
+# M0 spike 產生的暫存 wav（tests/fixtures/*.wav 是用腳本重現生成的固定樣本，
+# 保留在版控內以便重跑測試；這裡只排除臨時性、非固定的輸出）
+*.tmp.wav
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db

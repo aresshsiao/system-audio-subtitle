@@ -1,0 +1,30 @@
+# 語言包：英文 → 繁體中文
+# schema 定義見 contracts/langpack_schema.py；欄位說明見 ARCHITECTURE.md §13.2
+schema_version: 1
+id: en-zhHant
+display_name: "英文 → 繁體中文"
+version: "1.0.0"
+
+src_lang: en
+tgt_lang: zh-Hant
+
+asr:
+  engine: faster-whisper
+  model: large-v3
+  # 英文幻覺相對少，暫不附黑名單檔；有觀察到誤判再補 hallucination.txt
+
+stabilizer:
+  granularity: word   # 空格分詞，可用詞層級比對前綴穩定度
+
+policy:
+  draft_translate: true   # SVO 語序，暫定稿先翻不會整句意思反過來
+  line_break: space
+
+translate:
+  local_engine: ct2-nllb
+  src_code: eng_Latn
+  tgt_code: zho_Hant
+  cloud_engine: llm-api
+
+typography:
+  font_hint: "Noto Sans TC"

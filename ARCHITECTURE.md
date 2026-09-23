@@ -240,7 +240,7 @@ class Subtitle:
 - ❌ 會混進 Discord 語音、通知音效、遊戲音效 —— **這正是「媒體聲音」訴求要解決的問題**
 - 📌 用途：Phase 1 打通管線、以及 Tier 2 不可用時的後備
 
-### Tier 2 — Process Loopback Capture（行程級）★ 核心差異化
+### Tier 2 — Process Loopback Capture（行程級）★ 核心差異化 —— ✅ 可行性已驗證（M0 Spike B）
 
 Windows 10 build 20348+ / Windows 11 提供 `ActivateAudioInterfaceAsync` 搭配
 `AUDIOCLIENT_ACTIVATION_PARAMS`，可**只擷取指定 PID 的播放串流**。
@@ -251,17 +251,45 @@ PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE  ← 抓「除了 Discord 以�
 ```
 
 這才是真正的「只翻譯媒體聲音」。目前**沒有任何 Python 套件包裝這個 API**，
-必須自己用 `ctypes` 打 COM，或寫一個小 pybind11 擴充。
+必須自己用 `ctypes` + `comtypes` 打 COM。
 
-已知陷阱（實作前必讀）：
+**M0 Spike B 已用真實音訊驗證可行**：`scripts/spike_b_process_loopback.py`
+手刻了完整呼叫鏈，並用兩個獨立行程同時播放不同音訊（一個語音、一個
+440Hz 純音）做隔離測試——鎖定語音行程的 PID 只收到語音能量（RMS 0.11，
+單獨播放時 0.08），鎖定純音行程的 PID 只收到純音能量（RMS 0.69，單獨播放
+時 0.64），**兩者互不污染**。這是整個專案最高風險的假設，現在已經證實成立。
+
+實作時踩到的三個坑（都已經在 spike 腳本中修好，M4 正式實作時直接照做即可）：
+
+1. **必須用 MTA，不能用 STA**——`ActivateAudioInterfaceAsync` 在 STA apartment
+   下呼叫會直接同步失敗，回傳 `E_UNEXPECTED`（0x8000000E）。而 `import comtypes`
+   本身就會自動以 STA 初始化 COM，所以要先 `CoUninitialize()` 解除，
+   才能重新用 `CoInitializeEx(COINIT_MULTITHREADED)` 切到 MTA。
+2. **完成回呼物件必須實作 `IAgileObject`**——mmdevapi 內部用背景執行緒呼叫
+   我們傳入的 `IActivateAudioInterfaceCompletionHandler`，物件不宣告支援
+   `IAgileObject`（跨 apartment 直接呼叫、不需要標準 COM marshaling/proxy）
+   的話，呼叫端會在**呼叫當下**就收到同一個 `E_UNEXPECTED`，錯誤訊息完全
+   看不出跟 marshaling 有關，很容易被誤判成參數格式錯誤而繞錯方向排查。
+3. **comtypes 對 HRESULT 回傳型別的方法有特殊呼叫慣例**——`[out]` 參數不是
+   用 `byref()` 傳進去，而是直接變成 Python 呼叫的回傳值（失敗時 comtypes
+   自動丟 `COMError`，不用自己比對 HRESULT）；這點對「呼叫別人實作好的
+   COM 物件」（如 `IAudioClient`）與「實作自己的 COM 回呼給別人呼叫」
+   （如 `IActivateAudioInterfaceCompletionHandler`）是同一套規則，一開始
+   誤用「自己填 byref 再讀出來」的 C 風格寫法會直接 `TypeError`。
+
+已知陷阱（M4 正式實作前必讀，尚未在 spike 中驗證的部分）：
 
 1. **瀏覽器是多行程的** —— Chrome / Edge 的音訊實際由 audio service 子行程輸出，
    必須用 `INCLUDE_TARGET_PROCESS_TREE` 對主行程下手，抓單一 PID 會得到靜音。
+   Spike B 只測過單一行程（PowerShell 直接播放），**尚未實測瀏覽器分頁**。
 2. **不支援事件驅動模式** —— 不能用 `AUDCLNT_STREAMFLAGS_EVENTCALLBACK`，
-   只能輪詢。輪詢週期直接決定抖動，建議 10ms 並配合 `avrt.dll` 的
-   `AvSetMmThreadCharacteristics("Pro Audio")` 提升執行緒優先權。
-3. **目標沒出聲時拿到的是靜音而非「無資料」** —— 不能靠「沒資料」判斷沒在播放。
+   只能輪詢。Spike B 用 5ms 輪詢間隔驗證可行；正式實作建議搭配 `avrt.dll` 的
+   `AvSetMmThreadCharacteristics("Pro Audio")` 提升執行緒優先權，降低抖動。
+3. **目標沒出聲時拿到的是靜音而非「無資料」** —— Spike B 已驗證：對沒在
+   出聲的行程擷取，`GetBuffer` 仍正常回傳、`AUDCLNT_BUFFERFLAGS_SILENT`
+   旗標會被設起來，RMS 為 0，不能靠「沒資料」判斷沒在播放。
 4. **目標行程結束後串流不會自己收掉** —— 需要監看 PID 存活並主動重建。
+   Spike B 未測試此情境，留給 M4。
 
 ### Tier 3 — Virtual Cable（後備）
 
@@ -383,22 +411,69 @@ class TranslationContext:
 
 | 階段 | 預算 | 備註 |
 |------|------|------|
-| WASAPI 擷取緩衝 | 20–30 ms | 10ms 輪詢 + 抖動餘裕 |
-| 環形緩衝 + IPC | < 2 ms | shared_memory 零複製 |
-| 重採樣 → 16k mono | < 3 ms | |
-| VAD | < 1 ms | Silero ONNX CPU |
+| WASAPI 擷取緩衝 | 20–30 ms | 10ms 輪詢 + 抖動餘裕（尚未實測，見下方 M1 待驗證） |
+| 環形緩衝 + IPC | < 2 ms | shared_memory 零複製（尚未實測） |
+| 重採樣 → 16k mono | < 3 ms | 尚未實測 |
+| VAD | < 1 ms | Silero ONNX CPU（尚未實測） |
 | **視窗累積（暫定稿）** | **500–700 ms** | **主要延遲來源，可調** |
-| ASR large-v3 int8, beam=1 | 120–250 ms | 1s 音訊 |
-| 本地 MT（NLLB-CT2 int8） | 60–150 ms | 短句 |
-| ZMQ 廣播 + Qt 渲染 | < 20 ms | |
-| **暫定稿合計** | **≈ 0.9–1.2 s** | |
+| ASR large-v3 int8_float16, beam=1 | **✅ p95 229ms**（~1.4s 音訊） | Spike A 實測，見下方 |
+| 本地 MT（NLLB-CT2 int8） | 60–150 ms | 尚未實測（M3 才接上） |
+| ZMQ 廣播 + Qt 渲染 | < 20 ms | 尚未實測 |
+| **暫定稿合計** | **≈ 0.9–1.2 s** | ASR 段已驗證，其餘等 M1/M2 補測 |
 | 句末靜音判定 | 350 ms | VAD 門檻 |
-| ASR beam=5 + 前文 prompt | 250–400 ms | |
-| MT 帶上下文 | 100–200 ms | |
-| **定稿合計（句末後）** | **≈ 0.7–1.0 s** | |
+| ASR beam=5 + 前文 prompt | **✅ p95 352ms**（典型長度 ~5.1s） | Spike A 實測，見下方 |
+| MT 帶上下文 | 100–200 ms | 尚未實測（M3 才接上） |
+| **定稿合計（句末後）** | **≈ 0.7–1.0 s** | ASR 段已驗證，其餘等 M2/M3 補測 |
 
 `scripts/bench_latency.py` 必須能量到**每一格**，不能只量端到端 ——
 沒有分項數字就無法知道該優化哪裡。
+
+### Spike A 實測結果（M0，2026-09）
+
+環境：RTX 4070 12GB、`faster-whisper` large-v3、`compute_type=int8_float16`、
+CUDA 12.6 + cuDNN 9.5（透過 `nvidia-cublas-cu12`/`nvidia-cudnn-cu12` pip 套件，
+非系統安裝的 CUDA Toolkit）。測試音檔用 Windows SAPI TTS 生成的真人語音特徵
+英文語句（非靜音/白噪音，避免量到不真實的最佳情況），每個場景暖機 3 次後
+量 30 次。跑法：`.venv/Scripts/python.exe scripts/bench_latency.py`。
+
+| 場景 | 音訊長度 | mean | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| 暫定稿 beam=1 | ~1.4s | 213ms | 215ms | 229ms | 232ms |
+| 定稿 beam=5（典型長度） | ~5.1s | 327ms | 326ms | 352ms | 355ms |
+| 定稿 beam=5（近 12s 強制斷句上限） | ~8.6s | 421ms | 414ms | **476ms** | 493ms |
+
+**關鍵發現：RTF 遠小於 1（beam=1 約 0.042，beam=5 約 0.048）**——解碼耗時
+主要是固定開銷（特徵擷取、encoder forward pass），不是隨音訊長度線性增加。
+這解釋了為什麼典型長度（~5s）遠比 worst-case（~8.6s，接近 12s 強制斷句上限）
+快得不成比例：**GPU 算力完全不是瓶頸，4070 有大量餘裕**。
+
+**唯一超出預算的情況**：worst-case 定稿（音訊接近 12s 強制斷句上限）p95
+476ms，略超過 400ms 預算上限。這正是 §11 降級階梯 L1（定稿 beam 5→1）
+存在的理由——不需要因此下修整體預算，讓 degrade.py 在長句時自動介入即可，
+對照組（worst-case + beam=1）p95 只要 406ms，回到預算內。
+
+**尚未驗證**：ASR 段以外的所有階段（擷取緩衝、IPC、VAD、MT、渲染）都還是
+估計值，會在 M1（擷取/VAD）、M2（渲染）、M3（MT）陸續補測後更新此表。
+根據 Spike A 的餘裕程度，這些階段合計預算即使抓寬一點，暫定稿與定稿的
+總體目標（1.2s / 0.8s）大機率仍然成立。
+
+### 已知環境陷阱：Windows 上的 cuBLAS/cuDNN DLL 載入
+
+Spike A 實測踩到的坑，記錄下來避免 M1 重踩：`ctranslate2.get_cuda_device_count()`
+只呼叫 CUDA driver API，能成功不代表推論真的能跑——用 pip 裝的
+`nvidia-cublas-cu12`/`nvidia-cudnn-cu12`，其 DLL 在 `<package>/bin/` 下，
+單純把這個路徑加進 `os.environ["PATH"]` **不夠**：Python 3.8+ 在 Windows 上
+預設用安全 DLL 搜尋模式，原生擴充（ctranslate2 底層）載入相依 DLL 不一定會
+走 PATH，必須額外呼叫 `os.add_dll_directory()` 明確註冊搜尋路徑，否則會在
+第一次真正做矩陣運算時才炸出 `cublas64_12.dll is not found`（模型可以正常
+載入，第一次 `.transcribe()` 才會炸，容易誤判成別的問題）。已修在
+`utils/gpu.py` 的 `ensure_cuda_dll_path()`，所有會 import `ctranslate2`
+或 `faster_whisper` 的進程入口都必須在 import 之前呼叫這個函式。
+
+另外，一般使用者帳號（非系統管理員、未開發者模式）在 Windows 上沒有建立
+symlink 的權限，`huggingface_hub` 預設用 symlink 佈置模型快取會直接失敗；
+已設定 `HF_HUB_DISABLE_SYMLINKS=1` 讓它改用複製檔案（犧牲一點硬碟空間），
+`scripts/setup_models.py`（M3）也要套用同樣設定。
 
 ---
 
@@ -585,7 +660,7 @@ typography:
 
 | 風險 | 影響 | 對策 |
 |------|------|------|
-| **Process Loopback 無 Python 綁定** | Tier 2 需自寫 COM 呼叫，是最大未知數 | 先做 Tier 1 打通全管線，Tier 2 排在 M4 且有 Tier 1/3 後備 |
+| ~~**Process Loopback 無 Python 綁定**~~ | ~~Tier 2 需自寫 COM 呼叫，是最大未知數~~ | **M0 Spike B 已解決**：`scripts/spike_b_process_loopback.py` 完整跑通並用雙行程隔離測試驗證，見 §6 Tier 2。剩餘風險降為「瀏覽器多行程場景尚未實測」，留給 M4 |
 | **DRM 內容音訊路徑** | Netflix / Disney+ 等可能走受保護音訊路徑，loopback 取到靜音 | M1 就實測各平台並記錄相容性表；不繞過保護機制，取不到就誠實提示使用者 |
 | **Whisper 幻覺** | 靜音 / 音樂段產生假字幕，日文最嚴重 | VAD 前置閘門 + `no_speech_prob` 門檻 + 已知幻覺片語黑名單 |
 | **CUDA / cuDNN 版本相依** | CTranslate2 需特定 CUDA 12 + cuDNN 9 | M0 就驗證並把版本釘死在 `requirements.txt`，寫進安裝文件 |

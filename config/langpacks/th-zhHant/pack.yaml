@@ -1,0 +1,30 @@
+# 語言包：泰文 → 繁體中文
+schema_version: 1
+id: th-zhHant
+display_name: "泰文 → 繁體中文"
+version: "1.0.0"
+
+src_lang: th
+tgt_lang: zh-Hant
+
+asr:
+  engine: faster-whisper
+  model: large-v3
+  # M1 驗收要用真實素材量測辨識率（見 ROADMAP M1）；若不堪用，
+  # 只需把下面 model 換成泰文專用模型，不需要動核心程式碼（見 §13.5）
+
+stabilizer:
+  granularity: char   # 泰文無空格分詞，前綴比對必須用字元層級（見 §8）
+
+policy:
+  draft_translate: true
+  line_break: width   # 沒有現成斷詞時，退而求其次按顯示寬度硬斷
+
+translate:
+  local_engine: ct2-nllb
+  src_code: tha_Thai
+  tgt_code: zho_Hant
+  cloud_engine: llm-api
+
+typography:
+  font_hint: "Noto Sans TC"

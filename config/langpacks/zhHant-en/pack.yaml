@@ -1,0 +1,29 @@
+# 語言包：繁體中文 → 英文（反向包，見 ARCHITECTURE.md §13.5）
+# 用途：自己開直播 / 開會時，對外掛英文字幕
+schema_version: 1
+id: zhHant-en
+display_name: "繁體中文 → 英文"
+version: "1.0.0"
+
+src_lang: zh
+tgt_lang: en
+
+asr:
+  engine: faster-whisper
+  model: large-v3
+
+stabilizer:
+  granularity: word   # 目標語言(英文)換行按詞；來源中文本身在 ASR 階段已是完整片段
+
+policy:
+  draft_translate: true
+  line_break: space
+
+translate:
+  local_engine: ct2-nllb
+  src_code: zho_Hant
+  tgt_code: eng_Latn
+  cloud_engine: llm-api
+
+typography:
+  font_hint: "Noto Sans"
