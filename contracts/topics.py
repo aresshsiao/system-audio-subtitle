@@ -31,6 +31,19 @@ AUDIO_RING_BUFFER_SAMPLE_RATE = 16000
 AUDIO_RING_BUFFER_SECONDS = 30  # 留 30 秒緩衝：足夠涵蓋 12s 強制斷句上限 + 餘裕
 AUDIO_RING_BUFFER_CAPACITY_SAMPLES = AUDIO_RING_BUFFER_SAMPLE_RATE * AUDIO_RING_BUFFER_SECONDS
 
+# --- Gateway（PROCESS 3 後端半部）對外的 HTTP/WebSocket 位址 ---
+# 見 ARCHITECTURE.md §12：UI（Overlay/控制台）都是無狀態消費者，連這個
+# WebSocket 端點拿字幕；斷線重連只要重新接上就好，Session 的狀態在
+# gateway 這一端，不需要 client 自己記得漏收了什麼。
+GATEWAY_HTTP_HOST = "127.0.0.1"
+GATEWAY_HTTP_PORT = 8765
+GATEWAY_WS_PATH = "/ws/subtitles"
+
+
+def gateway_ws_url() -> str:
+    return f"ws://{GATEWAY_HTTP_HOST}:{GATEWAY_HTTP_PORT}{GATEWAY_WS_PATH}"
+
+
 # --- ZeroMQ endpoint 位址 ---
 # 一律用 tcp://127.0.0.1，不用 ipc://：libzmq 的 ipc:// transport 在 Windows 上
 # 支援度不一致（依編譯選項而定），tcp://127.0.0.1 才是 Windows 上唯一穩定可靠的

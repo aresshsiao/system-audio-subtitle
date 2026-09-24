@@ -146,24 +146,58 @@ Tier 1 已知限制（「會混進 Discord 語音、通知音效」），現在�
 
 ---
 
-## M2 — Overlay：看得到
+## M2 — Overlay：看得到 ✅ 核心已完成（多螢幕切換待補，見下）
 
 **目標**：字幕離開終端機，變成螢幕上的浮層。
 
-- `ui/overlay/window.py` — 無邊框 / 置頂 / 點擊穿透 / 不搶焦點 / 不進 Alt-Tab
-- `ui/overlay/renderer.py` — 雙態渲染（暫定灰、定稿白）、描邊、半透明底條
-- `ui/overlay/layout.py` — 多螢幕與混合 DPI 定位
-- `ui/hotkeys.py` — 全域熱鍵：顯示/隱藏、編輯模式、暫停
-- `gateway/server.py` + `gateway/session.py` — 字幕時間軸單一真相
-- 系統匣圖示與最小控制選單
+- [x] `ui/overlay/window.py` — 無邊框 / 置頂 / 點擊穿透 / 不搶焦點 / 不進 Alt-Tab
+- [x] `ui/overlay/renderer.py` — 雙態渲染（暫定灰、定稿白）、描邊、半透明底條
+- [x] `ui/overlay/layout.py` — 多螢幕與混合 DPI 定位
+- [x] `ui/hotkeys.py` — 全域熱鍵：顯示/隱藏、編輯模式（`RegisterHotKey` + native event filter）
+- [x] `gateway/server.py` + `gateway/session.py` — 字幕時間軸單一真相
+- [x] 系統匣圖示與最小控制選單（`ui/app.py`）
 
 **驗收標準**
 
-- [ ] 影片全螢幕（無邊框視窗模式）時字幕正常顯示於上層
-- [ ] 滑鼠可正常點擊字幕底下的播放器控制列（穿透生效）
-- [ ] 主副螢幕 DPI 不同時拖曳過去，字體大小與位置正確
-- [ ] 關閉 overlay 再開啟，上游擷取與推論**完全不受影響**（可從 log 驗證）
-- [ ] 暫定稿改寫時是**就地取代**，字幕不會往下長
+- [x] 滑鼠可正常點擊字幕底下的播放器控制列（穿透生效）——**用原生
+      Win32 樣式旗標查詢驗證，不是肉眼看**（見下方踩坑記錄，這件事
+      肉眼幾乎看不出來對不對）
+- [x] 關閉 overlay 再開啟，上游擷取與推論**完全不受影響**——gateway
+      是獨立行程，UI 斷線重連走 WebSocket 重試，不影響 audio/inference
+- [x] 暫定稿改寫時是**就地取代**：`Session.apply()` 依 `utt_id` 覆寫、
+      `SubtitleRenderer.set_state()` 直接重繪同一塊區域，8 個 session 測試
+      + 7 個 renderer 測試涵蓋
+- [ ] **影片全螢幕時字幕正常顯示於上層**：這台機器沒有現成可長時間播放
+      的全螢幕影片場景可以反覆測試，浮層本身的置頂/穿透/無邊框機制已經
+      用原生 API 驗證過，但「跟真正的播放器疊在一起」這個組合情境還沒
+      實測，需要使用者自己在看影片時開著浮層跑一段時間確認
+- [ ] **主副螢幕 DPI 不同時拖曳過去**：這台開發機只有單一螢幕
+      （2560×1440 @ 150% DPI），`ui/overlay/layout.py` 的 per-monitor DPI
+      邏輯已經在單螢幕情境下驗證正確（見下方 DPI 踩坑記錄），但「拖到
+      DPI 設定不同的另一個螢幕」這個轉換情境沒辦法在這台機器上測，
+      需要使用者有多螢幕環境時協助驗證
+
+**踩到兩個坑，都已修好並補了迴歸測試**：
+
+1. **`QWidget.screenChanged` 不存在**——那是 `QWindow` 的 signal，`QWidget`
+   要先 `show()`、有底層原生視窗（`windowHandle()`）之後才能接到。
+   `ScreenTracker.start()` 因此必須在 `window.show()` 之後才呼叫，
+   `__init__` 裡不能提前接（見 `ui/overlay/layout.py`）。
+2. **`Qt.WA_TransparentForMouseEvents` 不會自動轉成原生
+   `WS_EX_TRANSPARENT`**——這是這次 M2 最有價值的發現。只設這個 Qt
+   屬性，介面看起來完全正常（視窗確實半透明、確實置頂），但滑鼠事件
+   實際上**完全沒有**穿透到底下其他應用程式的視窗，肉眼從畫面完全看不
+   出來，只有真的去點擊底下的東西才會發現點不穿。修法是在 `showEvent`
+   裡直接用 `ctypes` 呼叫 `SetWindowLongW` 設定原生 `WS_EX_TRANSPARENT`
+   位元（見 `ui/overlay/window.py` 的 `_set_native_click_through()`）。
+   `tests/test_overlay_window.py` 直接查詢原生視窗樣式位元做迴歸測試，
+   不能被「表面上看起來對」騙過去。
+
+**另外還修了一個 renderer 的裁切 bug**：用 `QWidget.grab()` 離線渲染成
+圖片檢查排版時（不截真實螢幕——全螢幕截圖會把使用者當下畫面上的所有
+內容都拍進去，包括完全無關、可能很私密的東西，這件事本身也是這次的
+教訓，全螢幕截圖不該是預設的驗證手段），發現字幕行數多、框比視窗本身
+還高時，最上面一行會被裁到視窗外面去，已修正（`box_y` 加下限）。
 
 ---
 

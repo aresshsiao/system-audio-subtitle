@@ -43,3 +43,4 @@ comtypes==1.4.8                # Spike B: Process Loopback COM 介面
 # --- 開發 / 測試 ---
 pytest==8.3.4
 pytest-asyncio==0.25.2
+httpx==0.28.1                   # fastapi.testclient 依賴（測 gateway 的 WebSocket 端點）
