@@ -491,7 +491,7 @@ symlink 的權限，`huggingface_hub` 預設用 symlink 佈置模型快取會直
 | L1 | 定稿 `beam_size` 5 → 1 | 定稿略差 |
 | L2 | 暫定稿更新 250ms → 500ms | 字幕較跳 |
 | L3 | 關閉雲端精修 | 失去潤飾 |
-| L4 | large-v3 → distil-large-v3 | 辨識率下降 |
+| L4 | large-v3 → 較小的**多語**模型（預設 large-v3-turbo；原設計的 distil-large-v3 是純英文，日/泰文會壞掉） | 辨識率下降 |
 | L5 | 丟棄最舊未處理段落 | **字幕缺漏** |
 
 負載回落後逐級恢復，並加遲滯（hysteresis）避免在邊界反覆震盪。

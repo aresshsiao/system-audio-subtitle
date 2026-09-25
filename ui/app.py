@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect as ws_connect
 
-from contracts.messages import Transcript
+from contracts.messages import Subtitle
 from contracts.topics import gateway_ws_url
 from ui.hotkeys import MOD_ALT, MOD_CONTROL, HotkeyManager
 from ui.overlay.layout import ScreenTracker, compute_geometry, font_point_size_for_screen
@@ -37,7 +37,7 @@ class SubtitleClient(QThread):
     給主執行緒。斷線會自動重連（gateway 可能比 UI 晚啟動，或中途重啟）。
     """
 
-    transcript_received = Signal(object)  # Transcript
+    subtitle_received = Signal(object)  # Subtitle
     connection_state_changed = Signal(bool)  # True=已連線
 
     def __init__(self, url: str) -> None:
@@ -56,8 +56,7 @@ class SubtitleClient(QThread):
                             msg = ws.recv(timeout=_RECV_TIMEOUT_S)
                         except TimeoutError:
                             continue
-                        transcript = Transcript.decode(msg.encode("utf-8"))
-                        self.transcript_received.emit(transcript)
+                        self.subtitle_received.emit(Subtitle.decode(msg.encode("utf-8")))
             except (WebSocketException, OSError) as e:
                 if self._stop_requested:
                     break
@@ -114,11 +113,11 @@ def main() -> int:
     hotkeys.register(MOD_CONTROL | MOD_ALT, ord("S"), toggle_visibility)
     hotkeys.register(MOD_CONTROL | MOD_ALT, ord("E"), toggle_edit_mode)
 
-    def on_transcript(transcript: Transcript) -> None:
-        renderer.set_state(RenderState(text=transcript.text, state=transcript.state))
+    def on_subtitle(subtitle: Subtitle) -> None:
+        renderer.set_state(RenderState(text=subtitle.target_text, state=subtitle.state))
 
     client = SubtitleClient(gateway_ws_url())
-    client.transcript_received.connect(on_transcript)
+    client.subtitle_received.connect(on_subtitle)
     client.start()
 
     tray = QSystemTrayIcon(_make_tray_icon())
@@ -149,6 +148,31 @@ def main() -> int:
     audio_source_action = QAction("音源選擇...")
     audio_source_action.triggered.connect(open_audio_source)
     menu.addAction(audio_source_action)
+
+    def open_cloud_polish() -> None:
+        from ui.panel.cloud_polish import CloudPolishDialog
+
+        dialog = CloudPolishDialog()
+        dialog.exec()
+
+    cloud_action = QAction("雲端精修...")
+    cloud_action.triggered.connect(open_cloud_polish)
+    menu.addAction(cloud_action)
+
+    metrics_panel: list = []  # 非模態，要留著參照不然會被回收
+
+    def open_metrics() -> None:
+        from ui.panel.metrics_panel import MetricsPanel
+
+        if metrics_panel and metrics_panel[0].isVisible():
+            metrics_panel[0].raise_()
+            return
+        metrics_panel[:] = [MetricsPanel()]
+        metrics_panel[0].show()
+
+    metrics_action = QAction("效能監控...")
+    metrics_action.triggered.connect(open_metrics)
+    menu.addAction(metrics_action)
 
     langpack_action = QAction("語言包設定...")
     langpack_action.triggered.connect(open_langpack_manager)

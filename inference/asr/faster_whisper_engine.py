@@ -64,3 +64,15 @@ class FasterWhisperEngine:
         detected_language = language if language is not None else info.language
 
         return ASRResult(text=text, language=detected_language, no_speech_prob=no_speech_prob)
+
+
+def is_model_cached(model_size: str) -> bool:
+    """模型是否已經在本機快取（不會觸發下載）。降級階梯 L4 用：不能在系統過載
+    的當下才去下載幾百 MB 的備援模型，所以只有預先下載好的才會啟用 L4。"""
+    from faster_whisper.utils import download_model
+
+    try:
+        download_model(model_size, local_files_only=True)
+        return True
+    except Exception:  # noqa: BLE001 - 找不到快取的例外型別因版本而異
+        return False

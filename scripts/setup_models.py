@@ -6,6 +6,7 @@ ASR（faster-whisper）不需要這支腳本處理——它自己會在 inferenc
   - NLLB-200 翻譯模型轉成 CTranslate2 int8（M3，見 §9）
 
 跑法：.venv/Scripts/python.exe scripts/setup_models.py
+      .venv/Scripts/python.exe scripts/setup_models.py --degrade-model   # 另外預先下載降級階梯 L4 的備援模型
 """
 
 from __future__ import annotations
@@ -110,7 +111,31 @@ def convert_nllb_to_ctranslate2() -> Path:
     return dest
 
 
+def fetch_degrade_model() -> None:
+    """預先下載降級階梯 L4 的備援 ASR 模型（見 inference/degrade.py）。
+
+    要事先下載的原因：L4 是「系統已經過載」時才會觸發，不能在那個當下才去
+    下載幾百 MB。沒快取的話 inference-service 會停用 L4（直接從 L3 跳到 L5）。
+    """
+    import os
+
+    from utils.gpu import ensure_cuda_dll_path
+
+    ensure_cuda_dll_path()
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+    from faster_whisper.utils import download_model
+
+    name = os.environ.get("SAS_DEGRADE_MODEL", "large-v3-turbo")
+    print(f"下載降級備援模型 {name} ...")
+    path = download_model(name)
+    print(f"完成: {path}")
+
+
 def main() -> int:
+    if "--degrade-model" in sys.argv[1:]:
+        sys.path.insert(0, str(ROOT))
+        fetch_degrade_model()
+        return 0
     fetch_silero_vad_onnx()
     convert_nllb_to_ctranslate2()
     return 0

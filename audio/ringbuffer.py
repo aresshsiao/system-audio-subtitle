@@ -173,6 +173,12 @@ class RingBufferReader:
     def read_total(self) -> int:
         return self._read_total
 
+    @property
+    def write_total(self) -> int:
+        """寫入端目前寫到哪（絕對樣本數）。跟某段音訊的 end_sample 相減就是
+        「這段音訊說完之後過了多久才輪到處理」，是背壓的直接量測。"""
+        return int(self._header[0])
+
     def peek(self, start_sample: int, end_sample: int) -> np.ndarray:
         """讀取 `[start_sample, end_sample)` 這個絕對樣本範圍，**不影響**
         `read()` 的循序游標。

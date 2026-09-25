@@ -50,6 +50,9 @@ class Session:
             return None
         return self._latest_by_utt[self._order[-1]]
 
+    def is_current(self, utt_id: str) -> bool:
+        return bool(self._order) and self._order[-1] == utt_id
+
     def history(self) -> list[Subtitle]:
         """依出現順序排列的逐句歷史，每句都是該 utt_id 目前已知的最新狀態。"""
         return [self._latest_by_utt[uid] for uid in self._order]

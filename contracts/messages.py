@@ -277,3 +277,45 @@ class SetActiveLangPacksAck(Message):
     success: bool
     active_pack_ids: list[str]
     error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# M5：雲端精修控制與可觀測性
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SetCloudPolish(Message):
+    """UI → inference-service。`enabled=None` 只查詢目前狀態，不改變任何設定
+    （UI 開面板時用來顯示現況，以及在使用者同意前取得資料會送往哪個主機）。
+    """
+
+    enabled: bool | None = None
+
+
+@dataclass(frozen=True)
+class CloudPolishStatus(Message):
+    """回覆 `SetCloudPolish`。API 金鑰只存在 inference-service 的環境變數裡，
+    這裡只回報「有沒有設定好」與「資料會送去哪個主機」，絕不帶金鑰。
+    """
+
+    success: bool
+    enabled: bool
+    configured: bool  # 環境變數 SAS_LLM_BASE_URL / SAS_LLM_MODEL 是否已設
+    endpoint_host: str | None = None
+    breaker_open: bool = False  # 目前因連續失敗而暫停送出（斷網/額度用盡）
+    blocked_by_degrade: bool = False  # 目前因降級階梯 L3+ 而暫停
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class MetricsSnapshot(Message):
+    """inference-service 每秒發布一次的可觀測性快照。見 ARCHITECTURE.md §15。
+
+    `histograms[name]` = {count,p50,p95,p99,max}；延遲類的單位是毫秒。
+    """
+
+    degrade_level: int
+    histograms: dict[str, dict[str, float]]
+    counters: dict[str, int]
+    gauges: dict[str, float]

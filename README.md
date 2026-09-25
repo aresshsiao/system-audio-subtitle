@@ -91,6 +91,29 @@ $env:SAS_HALLUCINATION_BLACKLIST = "config\langpacks\ja-zhHant\hallucination.txt
 > 語言包（`config/langpacks/`）目前只是資料檔案，`inference-service`
 > 還沒有真正讀它們做自動路由——這是 M3 要接上的部分，見 ROADMAP.md。
 
+### 雲端精修（選用，預設關閉）與效能監控
+
+系統匣選單：
+
+- **效能監控...**：降級階梯目前級別、各階段延遲 p50/p95/p99、RTF、丟棄/過濾計數。
+  跟不上即時時系統會自動逐級降品質（beam↓ → 更新變慢 → 停精修 → 換小模型 → 丟過舊句子），
+  這裡看得到現在在第幾級。超過 3 秒沒收到回報會明講（通常是 GPU 被其他程式佔滿）
+- **雲端精修...**：把最近幾句連同前文送給 LLM 重譯，回來後靜默替換畫面上的字幕。
+  **開啟 = 字幕原文會送往第三方**，勾選時會確認並顯示目的主機。斷網/額度用盡會自動熔斷、
+  退回純本地字幕，恢復後自動繼續
+
+雲端服務在啟動 inference-service 前用環境變數設定（OpenAI 相容的 chat completions 端點，
+金鑰只存在這裡，不經過 UI）：
+
+```powershell
+$env:SAS_LLM_BASE_URL = "https://api.example.com/v1"
+$env:SAS_LLM_MODEL    = "your-model"
+$env:SAS_LLM_API_KEY  = "..."
+```
+
+降級階梯 L4 要用的備援模型需事先下載（不然 L4 停用）：
+`.venv/Scripts/python.exe scripts/setup_models.py --degrade-model`
+
 ## 6. 已知限制（現在這個階段）
 
 - **預設擷取整個輸出裝置**：背景音樂、通知音效也會被辨識。要只翻譯單一應用程式

@@ -19,6 +19,7 @@ from inference.stabilizer import Stabilizer
 from inference.translate.base import Translator
 from inference.translate.context import TranslationContext
 from inference.translate.glossary import Glossary, load_glossary
+from utils.metrics import Metrics
 
 DRAFT_BEAM_SIZE = 1
 FINAL_BEAM_SIZE = 5
@@ -60,12 +61,30 @@ class Pipeline:
         asr_engine: ASREngine,
         langpack_registry: LangPackRegistry,
         translator_registry: TranslatorRegistry,
+        metrics: Metrics | None = None,
     ) -> None:
         self._asr = asr_engine
+        self.metrics = metrics or Metrics()
+        # 降級階梯 L1 會把它降成 1（見 inference/degrade.py），由 service 設定。
+        self.final_beam_size = FINAL_BEAM_SIZE
         self._registry = langpack_registry
         self._translators = translator_registry
         self._glossary_cache: dict[str, Glossary] = {}
         self._blacklist_cache: dict[str, frozenset[str]] = {}
+
+    def set_asr_engine(self, engine: ASREngine) -> None:
+        """降級階梯 L4 換模型 / 恢復時用。"""
+        self._asr = engine
+
+    def cloud_polish_terms(self, pack_id: str | None) -> dict[str, str] | None:
+        """這個語言包有沒有宣告要用雲端精修（`translate.cloud_engine: llm-api`）。
+        有的話回傳它的術語表（可能是空 dict），沒有回傳 None。"""
+        if pack_id is None:
+            return None
+        pack = self._registry.get(pack_id)
+        if pack is None or pack.translate.cloud_engine != "llm-api":
+            return None
+        return dict(self._glossary_for(pack).terms)
 
     def granularity_for(self, pack_id: str | None) -> str:
         """給呼叫端（inference/service.py）決定 `Stabilizer.granularity` 用。
@@ -112,11 +131,16 @@ class Pipeline:
         """暫定稿：beam=1、不帶上下文。回傳 None 代表這段音訊被判定為幻覺
         或空白，呼叫端不該發布任何東西。
         """
-        result = self._asr.transcribe(audio, language=forced_language, beam_size=DRAFT_BEAM_SIZE)
+        with self.metrics.timer("asr_draft_ms") as timer:
+            result = self._asr.transcribe(
+                audio, language=forced_language, beam_size=DRAFT_BEAM_SIZE
+            )
+        self._observe_rtf(timer.elapsed_ms, audio)
 
         pack = self._registry.find_by_src_lang(result.language)
         blacklist = self._blacklist_for(pack) if pack is not None else frozenset()
         if is_hallucination(result.text, result.no_speech_prob, blacklist=blacklist):
+            self.metrics.incr("hallucination_filtered_total")
             return None
 
         stable_chars = stabilizer.update(result.text)
@@ -134,7 +158,8 @@ class Pipeline:
                 stable_chars=stable_chars,
             )
 
-        target_text = self._translate_with_glossary(pack, result.text)
+        with self.metrics.timer("mt_draft_ms"):
+            target_text = self._translate_with_glossary(pack, result.text)
         return DecodeResult(
             source_text=result.text,
             target_text=target_text,
@@ -152,16 +177,19 @@ class Pipeline:
         成功翻譯後會把這句加進 `context`，呼叫端不需要自己記得 push。
         """
         initial_prompt = self._build_asr_prompt(context)
-        result = self._asr.transcribe(
-            audio,
-            language=forced_language,
-            beam_size=FINAL_BEAM_SIZE,
-            initial_prompt=initial_prompt,
-        )
+        with self.metrics.timer("asr_final_ms") as timer:
+            result = self._asr.transcribe(
+                audio,
+                language=forced_language,
+                beam_size=self.final_beam_size,
+                initial_prompt=initial_prompt,
+            )
+        self._observe_rtf(timer.elapsed_ms, audio)
 
         pack = self._registry.find_by_src_lang(result.language)
         blacklist = self._blacklist_for(pack) if pack is not None else frozenset()
         if is_hallucination(result.text, result.no_speech_prob, blacklist=blacklist):
+            self.metrics.incr("hallucination_filtered_total")
             return None
 
         if pack is None:
@@ -177,7 +205,8 @@ class Pipeline:
 
         num_context = len(context)
         translate_input = context.build_input(result.text)
-        raw_output = self._translate_with_glossary(pack, translate_input)
+        with self.metrics.timer("mt_final_ms"):
+            raw_output = self._translate_with_glossary(pack, translate_input)
         target_text = context.extract_current_translation(
             raw_output, num_context_sentences=num_context
         )
@@ -192,6 +221,12 @@ class Pipeline:
             engine_name=pack.translate.local_engine,
             stable_chars=len(result.text),
         )
+
+    def _observe_rtf(self, elapsed_ms: float, audio) -> None:
+        """RTF（real-time factor）= 解碼耗時 / 音訊長度，> 1.0 就是跟不上即時。"""
+        audio_s = len(audio) / 16000 if audio is not None else 0.0
+        if audio_s > 0:
+            self.metrics.observe("asr_rtf", elapsed_ms / 1000.0 / audio_s)
 
     @staticmethod
     def _build_asr_prompt(context: TranslationContext) -> str | None:

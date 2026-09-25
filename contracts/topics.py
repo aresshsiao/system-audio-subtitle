@@ -18,10 +18,12 @@ AUDIO_UTTERANCE = "audio.utterance"  # Utterance，見 messages.py
 INFERENCE_TRANSCRIPT = "inference.transcript"  # Transcript
 INFERENCE_SUBTITLE = "inference.subtitle"  # Subtitle
 INFERENCE_DEGRADE_LEVEL = "inference.degrade_level"  # DegradeLevel 變化通知
+INFERENCE_METRICS = "inference.metrics"  # MetricsSnapshot，每秒一次（見 ARCHITECTURE.md §15）
 
 # --- REQ/REP endpoint 名稱（非 topic，是 runtime/bus.py 拿來查 socket 位址表）---
 CONTROL_AUDIO_CAPTURE_TARGET = "control.audio.capture_target"  # UI → audio-service
 CONTROL_LANGPACK_RELOAD = "control.inference.langpack_reload"  # UI → inference-service
+CONTROL_CLOUD_POLISH = "control.inference.cloud_polish"  # UI → inference-service（雲端精修開關/狀態）
 
 # --- shared_memory 環形緩衝（見 audio/ringbuffer.py）---
 # audio-service 是唯一的建立者（create=True），inference-service attach
@@ -53,6 +55,8 @@ BUS_ENDPOINTS: dict[str, str] = {
     INFERENCE_TRANSCRIPT: "tcp://127.0.0.1:5702",
     INFERENCE_SUBTITLE: "tcp://127.0.0.1:5702",  # 與 TRANSCRIPT 共用同一個 PUB socket，靠 topic 前綴區分
     INFERENCE_DEGRADE_LEVEL: "tcp://127.0.0.1:5702",
+    INFERENCE_METRICS: "tcp://127.0.0.1:5702",
     CONTROL_AUDIO_CAPTURE_TARGET: "tcp://127.0.0.1:5711",
     CONTROL_LANGPACK_RELOAD: "tcp://127.0.0.1:5712",
+    CONTROL_CLOUD_POLISH: "tcp://127.0.0.1:5713",
 }

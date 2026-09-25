@@ -90,7 +90,10 @@ async def _zmq_subscriber_loop() -> None:
         while True:
             _topic, payload = await socket.recv_multipart()
             subtitle = Subtitle.decode(payload)
-            if session.apply(subtitle):
+            if session.apply(subtitle) and session.is_current(subtitle.utt_id):
+                # 只廣播「目前顯示中的那一句」的更新。舊句子的更新（例如雲端
+                # 精修晚一點才回來、那時候浮層早已換到下一句）只進 Session
+                # 歷史，不推給 UI——否則浮層會被舊句子突然蓋掉。
                 await _broadcast(subtitle)
     except asyncio.CancelledError:
         pass

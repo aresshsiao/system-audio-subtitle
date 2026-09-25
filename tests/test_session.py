@@ -99,3 +99,19 @@ def test_clear_resets_everything() -> None:
     assert session.current_display() is None
     assert session.history() == []
     assert session.latest("u1") is None
+
+
+def test_is_current_only_for_latest_utterance() -> None:
+    """舊句子的更新（例如晚到的雲端精修）不是「目前顯示中」，gateway 不該廣播它。"""
+    session = Session()
+    session.apply(make_subtitle("u1", 0, "first", state=SubtitleState.FINAL))
+    session.apply(make_subtitle("u2", 0, "second"))
+
+    assert session.is_current("u2") and not session.is_current("u1")
+
+    # 晚到的 u1 精修：套用進歷史，但不是目前顯示
+    polished = make_subtitle("u1", 1, "first (polished)", state=SubtitleState.POLISHED)
+    assert session.apply(polished) is True
+    assert not session.is_current("u1")
+    assert session.current_display().utt_id == "u2"
+    assert session.latest("u1") == polished
