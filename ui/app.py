@@ -140,6 +140,16 @@ def main() -> int:
         dialog = LangPackManagerDialog()
         dialog.exec()
 
+    def open_audio_source() -> None:
+        from ui.panel.audio_source import AudioSourceDialog
+
+        dialog = AudioSourceDialog()
+        dialog.exec()
+
+    audio_source_action = QAction("音源選擇...")
+    audio_source_action.triggered.connect(open_audio_source)
+    menu.addAction(audio_source_action)
+
     langpack_action = QAction("語言包設定...")
     langpack_action.triggered.connect(open_langpack_manager)
     menu.addAction(langpack_action)

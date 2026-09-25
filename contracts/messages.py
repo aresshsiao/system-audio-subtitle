@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import types
 import typing
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
@@ -70,8 +71,15 @@ def _to_jsonable(obj: Any) -> Any:
 
 
 def _unwrap_optional(annotation: Any) -> Any:
-    """把 `X | None` / `Optional[X]` 化簡成 X，其餘型別原樣回傳。"""
-    if get_origin(annotation) is Union:
+    """把 `X | None` / `Optional[X]` 化簡成 X，其餘型別原樣回傳。
+
+    兩種寫法都要認：`Optional[X]` / `Union[X, None]` 的 origin 是
+    `typing.Union`，但 Python 3.10+ 的 `X | None` 語法產生的是
+    `types.UnionType`——只認前者的話，`Enum | None` 這類欄位解碼後會漏還原成
+    裸字串（M4 加 `SetCaptureTargetAck.active_kind` 時實測踩到，之前的
+    欄位型別剛好都是原始型別，`str | None` 原樣回傳本來就是對的，所以沒被發現）。
+    """
+    if get_origin(annotation) in (Union, types.UnionType):
         args = [a for a in get_args(annotation) if a is not type(None)]
         if len(args) == 1:
             return args[0]
@@ -231,6 +239,23 @@ class CaptureTarget(Message):
             raise ValueError("CaptureTargetKind.ENDPOINT 需要 device_id")
         if self.kind == CaptureTargetKind.PROCESS and self.pid is None:
             raise ValueError("CaptureTargetKind.PROCESS 需要 pid")
+
+
+@dataclass(frozen=True)
+class SetCaptureTargetAck(Message):
+    """audio-service 對 `CaptureTarget` 切換請求的回覆。
+
+    `success=True` 不代表「照使用者要的那層擷取」——Tier 2 啟用失敗時會自動退
+    回 Tier 1（見 ARCHITECTURE.md §16），此時仍是 `success=True`（有在擷取），
+    但 `active_kind` 會跟請求的不同，`warning` 說明退回的原因，UI 要把這句
+    話明確顯示給使用者，不能靜默退回讓人以為還是行程級擷取。
+    """
+
+    success: bool
+    active_kind: CaptureTargetKind | None = None
+    description: str = ""  # 給 UI 顯示用，例如 "行程 chrome.exe (PID 1234)"
+    warning: str | None = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------

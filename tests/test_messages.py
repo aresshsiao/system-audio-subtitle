@@ -148,3 +148,31 @@ def test_encode_produces_utf8_readable_json() -> None:
         no_speech_prob=0.0,
     ).encode()
     assert isinstance(raw, bytes)
+
+
+def test_optional_enum_field_roundtrips_as_enum_not_str() -> None:
+    """迴歸測試：`Enum | None`（PEP 604 寫法）解碼後要還原成 Enum，
+    不能漏成裸字串——`_unwrap_optional` 之前只認 typing.Union。"""
+    from contracts.messages import SetCaptureTargetAck
+
+    ack = SetCaptureTargetAck(
+        success=True,
+        active_kind=CaptureTargetKind.PROCESS,
+        description="行程 chrome.exe (PID 1234)",
+        warning=None,
+        error=None,
+    )
+    decoded = SetCaptureTargetAck.decode(ack.encode())
+
+    assert decoded == ack
+    assert isinstance(decoded.active_kind, CaptureTargetKind)
+
+
+def test_optional_enum_field_none_stays_none() -> None:
+    from contracts.messages import SetCaptureTargetAck
+
+    ack = SetCaptureTargetAck(success=False, error="boom")
+    decoded = SetCaptureTargetAck.decode(ack.encode())
+
+    assert decoded.active_kind is None
+    assert decoded.error == "boom"

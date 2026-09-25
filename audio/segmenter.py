@@ -67,6 +67,35 @@ class Segmenter:
         """
         self._reset_state()
 
+    def flush(self) -> Utterance | None:
+        """收掉目前正在進行的 utterance（如果有），但**不**重設樣本計數。
+
+        換音源時用：時間軸（樣本數）必須跨音源連續——ring buffer 的寫入位置
+        不會歸零，所以這裡的計數也不能歸零，否則新音源的 span 會指到
+        ring buffer 裡舊音源的位置。`reset()` 適合整條管線重來的情況，不是這個。
+        """
+        if self._state != _State.SPEAKING:
+            self._speech_run_ms = 0.0
+            return None
+        assert self._utt_id is not None and self._utt_start_sample is not None
+
+        silence_frames = round(self._silence_run_ms / self._frame_ms)
+        end_sample = max(
+            self._next_frame_start_sample - silence_frames * FRAME_SAMPLES,
+            self._utt_start_sample,
+        )
+        event = Utterance(
+            utt_id=self._utt_id,
+            span=AudioSpan(self._utt_start_sample, end_sample, self.config.sample_rate),
+            closed=True,
+        )
+        self._state = _State.SILENCE
+        self._speech_run_ms = 0.0
+        self._silence_run_ms = 0.0
+        self._utt_id = None
+        self._utt_start_sample = None
+        return event
+
     def process_frame(self, prob: float) -> Utterance | None:
         """餵一框的語音機率（0~1），回傳這一框觸發的事件，沒事件就回傳 None。"""
         frame_start = self._next_frame_start_sample

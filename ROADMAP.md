@@ -274,20 +274,89 @@ audio-service 避開 torch 是不同層級的考量——inference-service 本�
 
 ---
 
-## M4 — 行程級擷取：只聽媒體聲音 ★
+## M4 — 行程級擷取：只聽媒體聲音 ★ ✅ 已完成（真實瀏覽器情境待補測）
 
 **目標**：兌現「專門針對媒體聲音」這個核心訴求。前提是 Spike B 通過。
 
-- `audio/capture/process_loopback.py` — 正式實作（含 PID 存活監看與重建）
-- `audio/capture/enumerate.py` — 列出正在發聲的行程供 UI 選取
-- `audio/capture/virtual_cable.py` — Tier 3 後備與引導
-- UI 音源選擇器：端點 / 行程 / 虛擬裝置三選一，可即時切換
+- [x] `audio/capture/_win32_process_loopback_com.py` — 把 M0 Spike B 驗證過
+      的 COM 呼叫鏈抽成正式的共用模組（spike 腳本跟正式實作共用同一份，
+      不會日後改一邊忘了改另一邊）
+- [x] `audio/capture/process_loopback.py` — 正式實作，含 PID 存活監看與
+      自動重建
+- [x] `audio/capture/enumerate.py` — 行程存活查詢、依名稱找 PID、列出
+      候選行程清單（用標準有文件的 Win32 API，跟沒文件的 COM 層是
+      完全不同等級的風險）
+- [x] `audio/capture/virtual_cable.py` — Tier 3 偵測與引導（技術上重用
+      Tier 1，只負責「有沒有裝 VB-CABLE、裝置 id 是哪個」）
+- [x] `audio/service.py` 支援 `SAS_CAPTURE_TARGET` 環境變數切換 Tier 1/
+      Tier 2——**這證實了 `CaptureBackend` 抽象真的成立**：換 Tier
+      不需要改主迴圈一行程式碼，只是建構時選了不同的類別
+- [x] UI 音源選擇器：`ui/panel/audio_source.py`（系統匣「音源選擇...」）。
+      端點 / 行程 / 虛擬裝置三選一，經 REQ/REP 控制通道
+      （`CONTROL_AUDIO_CAPTURE_TARGET`）送 `CaptureTarget`，audio-service 由
+      `audio/capture_controller.py` 處理切換，**不需要重啟**。行程清單用
+      「有可見標題視窗的行程」（`enumerate.list_windowed_processes`），不用
+      「正在出聲」——後者要走 IAudioSessionManager2 另一組 COM，且會漏掉
+      暫停中的播放器
+- [x] 切換時的管線對齊（`service.realign_pipeline`）：補零湊滿 VAD 一框、
+      `Segmenter.flush()` 收掉進行中的句子、VAD 狀態清空，時間軸（樣本數）
+      跨音源連續不歸零
 
 **驗收標準**
 
-- [ ] 同時播放 YouTube 與 Discord 語音，字幕**只出現 YouTube 的內容**
-- [ ] 播放中關閉目標瀏覽器再重開，擷取自動重建，無需手動介入
-- [ ] Tier 2 不可用的機器（舊版 Windows）自動退回 Tier 1，並在 UI 明確告知
+- [x] **隔離性：兩個行程同時出聲，只鎖定其中一個 PID，只收到該行程的
+      音訊**——用**正式的 `ProcessLoopbackCapture` 類別**（不是 spike
+      腳本）重跑了 M0 Spike B 的雙行程測試：鎖定語音 PID 收到
+      RMS≈0.118（單獨播放時 0.08）、鎖定純音 PID 收到 RMS≈0.692
+      （單獨播放時 0.64），跟 Spike B 的數字一致，確認產品化後行為
+      沒有跑掉
+- [x] **Tier 2 完整整合進四進程管線**：`audio-service` 用
+      `SAS_CAPTURE_TARGET=process:<pid>` 真的透過行程級擷取拿到音訊，
+      `inference-service` 正確轉錄、翻譯出中文，跟 Tier 1 時表現一致
+      （DRAFT 逐步改善、FINAL 定稿跟原文語意吻合）——這是「只聽媒體
+      聲音」這個核心訴求第一次在完整產品管線裡兌現，不是只有獨立測試
+- [x] **自動重建機制**：用 mock 掉行程查詢函式的單元測試涵蓋了決策邏輯
+      （行程死掉要不要收掉串流、找不找得到新 PID、找到後有沒有真的
+      重新啟用），9 個測試全過
+- [ ] 「播放中關閉目標瀏覽器再重開，擷取自動重建」這個**真實情境**沒有
+      乾淨驗證成功——見下方意外發現
+- [x] **Tier 2 失敗自動退回 Tier 1，並在 UI 明確告知**：`CaptureController`
+      「先開新的、成功才關舊的」，PROCESS 開不起來就退回預設端點，ack 帶
+      `warning`，面板用琥珀色顯示「已退回…其他應用程式的聲音也會被翻譯」。
+      端點切換失敗則維持舊音源不中斷。單元測試涵蓋決策邏輯（9 個）+ UI 測試（9 個）
+- [x] **同一個 audio-service 進程內即時切換的真實驗證**（不重啟）：
+      T1 → T2（有聲行程，RMS≈0.416）→ T1（0.402）→ T2 不存在的 PID（退回
+      T1 並帶警告，0.404）→ T2 沉默行程（**RMS=0.0000，音調正在播放但被隔離**）
+      → T2 有聲行程（0.416），全程服務未崩潰，切換耗時 <50ms
+- [ ] 「同時播放 YouTube 與 Discord」這個真實瀏覽器情境沒有測試，只測過
+      自己控制的測試行程（Spike B 當時也一樣，瀏覽器多行程樹场景仍待
+      M4 之後補測）
+
+**切換時踩到的坑（COM apartment）**：第一次真實切換就失敗——Tier 1 先啟動時
+PortAudio 已在這個執行緒初始化過 COM，`ensure_mta()` 事後才做的
+`CoUninitialize → CoInitializeEx(MTA)` 只抵消一層引用計數，得到
+`RPC_E_CHANGED_MODE`；重試又把整個 apartment 拆掉，之後 PortAudio 釋放時
+`CO_E_NOTINITIALIZED`。修法：COM 模組 import 前設 `sys.coinit_flags = 0`
+（comtypes 官方機制，一開始就 MTA），audio-service `main()` 在任何 PyAudio 之前
+先呼叫 `ensure_mta()`；`ensure_mta()` 改用 `CoGetApartmentType` 偵測，已是 MTA
+就不動。有獨立子行程的迴歸測試。
+
+**尚未驗證**：真實瀏覽器（YouTube + Discord 語音同時出聲）的行程樹隔離；
+UI 面板本身的實機視覺（只用假的列舉/請求函式做過元件測試，沒有截圖確認排版）。
+
+**意外發現（值得記錄）**：實測「關閉目標行程、開一個新的同名行程」這個
+自動重建情境時，第一次嘗試在真實系統上失敗了——不是機制沒觸發（log
+確實顯示「已結束，嘗試自動重建」），而是這台開發機當下同時有好幾個
+`python.exe` 在跑（測試腳本自己、記錄行程等），「依名稱找行程、挑
+最小 PID」的重建目標選擇邏輯選到了不相關、沒在出聲的那個 python.exe，
+不是真正的新播放行程。這暴露了目前重建邏輯的真實限制：**行程名稱本身
+如果有歧義（同名但不相關的多個行程），可能重建到錯的目標**。對真實
+使用情境（例如「chrome.exe」，使用者通常只有一組瀏覽器工作階段）這個
+風險相對較低，但如果使用者剛好開了多個同名應用程式（例如多個瀏覽器
+設定檔），行為不保證選到使用者真正想要的那個。這是留給之後可以改善
+的已知限制，不是這次沒做完的事——decision logic 本身經過單元測試確認
+邏輯正確，只是「怎麼在多個同名行程裡選對的那個」還只有最簡單的
+「最小 PID」啟發式。
 
 ---
 

@@ -97,6 +97,15 @@ class VadStream:
         self._vad.reset()
         self._pending = np.empty(0, dtype=np.float32)
 
+    @property
+    def pending_samples(self) -> int:
+        """已收進來、但還湊不滿一框所以尚未算過的樣本數（0..FRAME_SAMPLES-1）。
+
+        換音源時，呼叫端要補零把這段湊滿一框再 reset，讓「VAD/segmenter 處理過
+        的位置」與 ring buffer 的寫入位置重新對齊。
+        """
+        return len(self._pending)
+
     def push(self, samples: np.ndarray) -> list[float]:
         """回傳這次呼叫湊滿的每一框機率（可能是空 list，也可能不只一個）。"""
         buf = np.concatenate([self._pending, samples.astype(np.float32)])
