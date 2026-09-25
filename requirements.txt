@@ -20,8 +20,14 @@ ctranslate2==4.8.2             # faster-whisper 與 NLLB 共用的推論後端
 # runtime 啟動時注入 PATH（見 scripts/probe_gpu.py）。
 nvidia-cublas-cu12==12.6.4.1
 nvidia-cudnn-cu12==9.5.1.17
-torch==2.14.0                  # 僅 scripts/setup_models.py 轉換模型用，CPU 版即可，非即時路徑
-transformers==4.57.6           # NLLB tokenizer / 模型轉換用（非即時路徑）
+torch==2.14.0                  # CPU 版即可，見下方 transformers 的說明；scripts/setup_models.py 轉換模型也用它
+# transformers 這個版本的 __init__ 內部無條件 import torch（不是延遲載入），
+# 沒辦法只用 AutoTokenizer 又完全避開 torch，見
+# inference/translate/ct2_nllb.py 開頭的詳細說明——這是 inference-service
+# 執行期真的需要的依賴（NLLB 的 tokenize/detokenize），不是只有
+# scripts/setup_models.py 轉換模型時用得到。torch 只是 import-time 的
+# 形式要求，翻譯的熱路徑不會用到 torch 的運算（那是 ctranslate2 做的）。
+transformers==4.57.6
 sentencepiece==0.2.2            # NLLB tokenizer 依賴
 
 # --- 跨進程通訊與生命週期 (runtime/) ---

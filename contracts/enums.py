@@ -23,6 +23,7 @@ class EngineKind(str, Enum):
     ASR_FASTER_WHISPER = "asr:faster-whisper"
     TRANSLATE_CT2_NLLB = "translate:ct2-nllb"
     TRANSLATE_LLM_API = "translate:llm-api"
+    NONE = "none"  # 沒有翻譯（找不到對應語言包，或語言包政策不翻這個階段）
 
 
 class DegradeLevel(int, Enum):

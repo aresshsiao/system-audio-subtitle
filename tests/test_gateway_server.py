@@ -1,6 +1,6 @@
 """gateway/server.py 的整合測試：真的啟動 gateway 子行程（跟正式部署完全
 一樣走 `python -m gateway.server` + uvicorn），用真正的 WebSocket client
-連過去，搭配真的 ZMQ Publisher 發布 Transcript——驗證「ZMQ → gateway →
+連過去，搭配真的 ZMQ Publisher 發布 Subtitle——驗證「ZMQ → gateway →
 WebSocket」這條真實路徑通不通。
 
 一開始嘗試用 FastAPI 的 TestClient（in-process、不用真的開 port）測試，
@@ -22,9 +22,9 @@ from pathlib import Path
 import pytest
 from websockets.sync.client import connect as ws_connect
 
-from contracts.enums import SubtitleState
-from contracts.messages import AudioSpan, Transcript
-from contracts.topics import BUS_ENDPOINTS, INFERENCE_TRANSCRIPT
+from contracts.enums import EngineKind, SubtitleState
+from contracts.messages import AudioSpan, Subtitle
+from contracts.topics import BUS_ENDPOINTS, INFERENCE_SUBTITLE
 from runtime.bus import Publisher
 
 pytestmark = pytest.mark.slow  # 真的開子行程 + 真的網路 socket
@@ -34,17 +34,18 @@ GATEWAY_PORT = 8765
 WS_URL = f"ws://127.0.0.1:{GATEWAY_PORT}/ws/subtitles"
 
 
-def make_transcript(utt_id: str = "u1", revision: int = 0, text: str = "hello") -> Transcript:
-    return Transcript(
+def make_subtitle(utt_id: str = "u1", revision: int = 0, text: str = "hello") -> Subtitle:
+    return Subtitle(
         utt_id=utt_id,
         revision=revision,
         state=SubtitleState.DRAFT,
         span=AudioSpan(0, 16000),
-        text=text,
         src_lang="en",
-        lang_locked=False,
-        stable_chars=0,
-        no_speech_prob=0.0,
+        tgt_lang="zh-Hant",
+        pack_id="en-zhHant",
+        source_text=text,
+        target_text=text,
+        engine=EngineKind.TRANSLATE_CT2_NLLB,
     )
 
 
@@ -76,17 +77,17 @@ def gateway_process():
             proc.wait()
 
 
-def test_websocket_receives_transcript_published_over_zmq(gateway_process) -> None:
-    publisher = Publisher(BUS_ENDPOINTS[INFERENCE_TRANSCRIPT])
+def test_websocket_receives_subtitle_published_over_zmq(gateway_process) -> None:
+    publisher = Publisher(BUS_ENDPOINTS[INFERENCE_SUBTITLE])
     try:
         with ws_connect(WS_URL, open_timeout=5) as ws:
             # 等 gateway 的 ZMQ SUB socket 真的連上（slow joiner，見
             # test_bus.py 的同樣說明），用重送探測直到收到為止。
-            probe = make_transcript(utt_id="probe", text="probe")
+            probe = make_subtitle(utt_id="probe", text="probe")
             deadline = time.monotonic() + 5.0
             received = None
             while time.monotonic() < deadline:
-                publisher.publish(INFERENCE_TRANSCRIPT, probe)
+                publisher.publish(INFERENCE_SUBTITLE, probe)
                 try:
                     received = ws.recv(timeout=0.3)
                     break
@@ -94,8 +95,8 @@ def test_websocket_receives_transcript_published_over_zmq(gateway_process) -> No
                     continue
             assert received is not None, "gateway 一直沒收到 ZMQ 探測訊息"
 
-            real = make_transcript(utt_id="u1", revision=0, text="Consider the results")
-            publisher.publish(INFERENCE_TRANSCRIPT, real)
+            real = make_subtitle(utt_id="u1", revision=0, text="Consider the results")
+            publisher.publish(INFERENCE_SUBTITLE, real)
 
             found = None
             deadline2 = time.monotonic() + 5.0
@@ -104,12 +105,12 @@ def test_websocket_receives_transcript_published_over_zmq(gateway_process) -> No
                     msg = ws.recv(timeout=0.5)
                 except TimeoutError:
                     continue
-                decoded = Transcript.decode(msg.encode("utf-8"))
+                decoded = Subtitle.decode(msg.encode("utf-8"))
                 if decoded.utt_id == "u1":
                     found = decoded
                     break
-            assert found is not None, "沒收到真正發布的 Transcript"
-            assert found.text == "Consider the results"
+            assert found is not None, "沒收到真正發布的 Subtitle"
+            assert found.target_text == "Consider the results"
     finally:
         publisher.close()
 
@@ -117,19 +118,19 @@ def test_websocket_receives_transcript_published_over_zmq(gateway_process) -> No
 def test_new_connection_receives_current_display_immediately(gateway_process) -> None:
     """已經有字幕在顯示時，新連上的 client 應該立刻收到目前狀態，
     不用等下一句話才看得到東西。"""
-    publisher = Publisher(BUS_ENDPOINTS[INFERENCE_TRANSCRIPT])
+    publisher = Publisher(BUS_ENDPOINTS[INFERENCE_SUBTITLE])
     try:
         with ws_connect(WS_URL, open_timeout=5) as ws1:
-            t = make_transcript(utt_id="u2", text="already showing")
+            t = make_subtitle(utt_id="u2", text="already showing")
             deadline = time.monotonic() + 5.0
             got_it = False
             while time.monotonic() < deadline:
-                publisher.publish(INFERENCE_TRANSCRIPT, t)
+                publisher.publish(INFERENCE_SUBTITLE, t)
                 try:
                     msg = ws1.recv(timeout=0.3)
                 except TimeoutError:
                     continue
-                if Transcript.decode(msg.encode("utf-8")).utt_id == "u2":
+                if Subtitle.decode(msg.encode("utf-8")).utt_id == "u2":
                     got_it = True
                     break
             assert got_it, "第一個 client 沒收到訊息，測試前提不成立"
@@ -137,30 +138,30 @@ def test_new_connection_receives_current_display_immediately(gateway_process) ->
             # 現在第二個 client 連上，應該立刻收到 session 目前的狀態
             with ws_connect(WS_URL, open_timeout=5) as ws2:
                 msg = ws2.recv(timeout=3.0)
-                decoded = Transcript.decode(msg.encode("utf-8"))
+                decoded = Subtitle.decode(msg.encode("utf-8"))
                 assert decoded.utt_id == "u2"
-                assert decoded.text == "already showing"
+                assert decoded.target_text == "already showing"
     finally:
         publisher.close()
 
 
 def test_stale_revision_is_not_broadcast(gateway_process) -> None:
-    publisher = Publisher(BUS_ENDPOINTS[INFERENCE_TRANSCRIPT])
+    publisher = Publisher(BUS_ENDPOINTS[INFERENCE_SUBTITLE])
     try:
         with ws_connect(WS_URL, open_timeout=5) as ws:
-            newer = make_transcript(utt_id="u3", revision=5, text="newer")
+            newer = make_subtitle(utt_id="u3", revision=5, text="newer")
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                publisher.publish(INFERENCE_TRANSCRIPT, newer)
+                publisher.publish(INFERENCE_SUBTITLE, newer)
                 try:
                     msg = ws.recv(timeout=0.3)
                 except TimeoutError:
                     continue
-                if Transcript.decode(msg.encode("utf-8")).utt_id == "u3":
+                if Subtitle.decode(msg.encode("utf-8")).utt_id == "u3":
                     break
 
-            stale = make_transcript(utt_id="u3", revision=2, text="stale")
-            publisher.publish(INFERENCE_TRANSCRIPT, stale)
+            stale = make_subtitle(utt_id="u3", revision=2, text="stale")
+            publisher.publish(INFERENCE_SUBTITLE, stale)
 
             # 過期訊息不該被廣播出來；收到逾時代表「真的沒收到」
             with pytest.raises(TimeoutError):

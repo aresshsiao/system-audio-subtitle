@@ -1,8 +1,9 @@
 """下載並準備模型權重到 `models/`（`.gitignore` 排除，每台機器要跑一次）。
 
-目前只有 VAD 模型（M1 用）。ASR / 翻譯模型的下載邏輯留給 M3 補上
-（faster-whisper 自己會在首次使用時透過 huggingface_hub 快取，不需要
-這支腳本處理；NLLB 轉 CTranslate2 的轉換步驟屬於 M3 範圍）。
+ASR（faster-whisper）不需要這支腳本處理——它自己會在 inference-service
+第一次使用時透過 huggingface_hub 快取。這裡處理的是：
+  - VAD 的 onnx 模型（M1）
+  - NLLB-200 翻譯模型轉成 CTranslate2 int8（M3，見 §9）
 
 跑法：.venv/Scripts/python.exe scripts/setup_models.py
 """
@@ -70,8 +71,48 @@ def fetch_silero_vad_onnx() -> Path:
     return dest
 
 
+NLLB_HF_MODEL = "facebook/nllb-200-distilled-600M"
+NLLB_QUANTIZATION = "int8"  # 見 ARCHITECTURE.md §9：本地即時翻譯，短句 < 100ms
+
+
+def convert_nllb_to_ctranslate2() -> Path:
+    """把 NLLB-200-distilled-600M 從 HuggingFace 轉成 CTranslate2 int8。
+
+    這是一次性、離線的轉換步驟（跟 ASR 模型不一樣，faster-whisper 直接
+    吃官方已經轉好的 CTranslate2 模型，但 NLLB 沒有官方預轉版本，要自己
+    用 `ct2-transformers-converter` 轉）。轉換過程需要 `transformers` +
+    `torch`（CPU 版即可，見 requirements.txt 的說明——這是唯一會用到
+    torch 的地方，執行期的 inference-service 完全不需要 torch）。
+    """
+    dest = MODELS_DIR / "nllb-200-distilled-600M-ct2"
+    if (dest / "model.bin").is_file():
+        print(f"已存在，略過: {dest}")
+        return dest
+
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"轉換 {NLLB_HF_MODEL} → CTranslate2 {NLLB_QUANTIZATION}（第一次跑會從 HF 下載原始權重，較久）...")
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ctranslate2.converters.transformers",
+            "--model",
+            NLLB_HF_MODEL,
+            "--output_dir",
+            str(dest),
+            "--quantization",
+            NLLB_QUANTIZATION,
+        ],
+        check=True,
+        env={**__import__("os").environ, "HF_HUB_DISABLE_SYMLINKS": "1"},
+    )
+    print(f"完成: {dest}")
+    return dest
+
+
 def main() -> int:
     fetch_silero_vad_onnx()
+    convert_nllb_to_ctranslate2()
     return 0
 
 

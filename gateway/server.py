@@ -1,14 +1,10 @@
 """PROCESS 3（後端半部）進入點：gateway。見 ARCHITECTURE.md §3、§12。
 
-FastAPI + WebSocket：訂閱 inference-service 的 Transcript，維護
-`session.Session`（字幕時間軸單一真相），廣播給所有連上的 WebSocket
-client（Overlay、控制台、未來的網頁 UI）。client 都是無狀態消費者——
-斷線重連只要重新接上，連上的當下會先收到目前的顯示狀態，不需要自己
-記得漏收了什麼。
-
-M2 現況：訂閱 `INFERENCE_TRANSCRIPT`（原文，還沒翻譯）。M3 接上翻譯後，
-改訂閱 `INFERENCE_SUBTITLE`，這支檔案要跟著改的地方只有訂閱的 topic
-跟訊息型別，Session 的邏輯不用動（見 session.py 的說明）。
+FastAPI + WebSocket：訂閱 inference-service 的 `Subtitle`（含譯文），
+維護 `session.Session`（字幕時間軸單一真相），廣播給所有連上的
+WebSocket client（Overlay、控制台、未來的網頁 UI）。client 都是無狀態
+消費者——斷線重連只要重新接上，連上的當下會先收到目前的顯示狀態，
+不需要自己記得漏收了什麼。
 """
 
 from __future__ import annotations
@@ -32,13 +28,13 @@ import zmq
 import zmq.asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from contracts.messages import Transcript
+from contracts.messages import Subtitle
 from contracts.topics import (
     BUS_ENDPOINTS,
     GATEWAY_HTTP_HOST,
     GATEWAY_HTTP_PORT,
     GATEWAY_WS_PATH,
-    INFERENCE_TRANSCRIPT,
+    INFERENCE_SUBTITLE,
 )
 from gateway.session import Session
 from utils.logging import setup_logging
@@ -71,10 +67,10 @@ async def ws_subtitles(websocket: WebSocket) -> None:
         logger.info("client disconnected, total=%d", len(_clients))
 
 
-async def _broadcast(transcript: Transcript) -> None:
+async def _broadcast(subtitle: Subtitle) -> None:
     if not _clients:
         return
-    message = transcript.encode().decode("utf-8")
+    message = subtitle.encode().decode("utf-8")
     dead: list[WebSocket] = []
     for ws in _clients:
         try:
@@ -87,15 +83,15 @@ async def _broadcast(transcript: Transcript) -> None:
 
 async def _zmq_subscriber_loop() -> None:
     socket = _zmq_ctx.socket(zmq.SUB)
-    socket.connect(BUS_ENDPOINTS[INFERENCE_TRANSCRIPT])
-    socket.setsockopt(zmq.SUBSCRIBE, INFERENCE_TRANSCRIPT.encode("utf-8"))
-    logger.info("subscribed to %s at %s", INFERENCE_TRANSCRIPT, BUS_ENDPOINTS[INFERENCE_TRANSCRIPT])
+    socket.connect(BUS_ENDPOINTS[INFERENCE_SUBTITLE])
+    socket.setsockopt(zmq.SUBSCRIBE, INFERENCE_SUBTITLE.encode("utf-8"))
+    logger.info("subscribed to %s at %s", INFERENCE_SUBTITLE, BUS_ENDPOINTS[INFERENCE_SUBTITLE])
     try:
         while True:
             _topic, payload = await socket.recv_multipart()
-            transcript = Transcript.decode(payload)
-            if session.apply(transcript):
-                await _broadcast(transcript)
+            subtitle = Subtitle.decode(payload)
+            if session.apply(subtitle):
+                await _broadcast(subtitle)
     except asyncio.CancelledError:
         pass
     finally:

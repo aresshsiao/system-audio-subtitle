@@ -231,3 +231,24 @@ class CaptureTarget(Message):
             raise ValueError("CaptureTargetKind.ENDPOINT 需要 device_id")
         if self.kind == CaptureTargetKind.PROCESS and self.pid is None:
             raise ValueError("CaptureTargetKind.PROCESS 需要 pid")
+
+
+# ---------------------------------------------------------------------------
+# UI → inference-service：語言包控制（見 ARCHITECTURE.md §13.4）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SetActiveLangPacks(Message):
+    """設定目前啟用的語言包集合（取代，不是疊加）。走 REQ/REP，UI 下拉選單
+    切換後要能確認 inference-service 真的收到了、套用了——不是發出去就算。
+    """
+
+    pack_ids: list[str]
+
+
+@dataclass(frozen=True)
+class SetActiveLangPacksAck(Message):
+    success: bool
+    active_pack_ids: list[str]
+    error: str | None = None

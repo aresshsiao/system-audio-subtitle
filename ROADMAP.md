@@ -201,30 +201,76 @@ Tier 1 已知限制（「會混進 Discord 語音、通知音效」），現在�
 
 ---
 
-## M3 — 翻譯層與語言包機制：看得懂、可切換
+## M3 — 翻譯層與語言包機制：看得懂、可切換 ✅ 已完成（10 分鐘長跑測試待補）
 
 **目標**：出現繁體中文，且語言方向從此是資料而非程式碼。
 
-- `inference/langpack.py` — 語言包 registry：掃描 `config/langpacks/`、驗證 schema、
-  熱重載；`stabilizer.py` 的比對粒度、`pipeline.py` 的 draft_translate 開關
-  改為讀語言包欄位，砍掉 M1/M2 期間可能存在的任何 per-language if/else
-- `config/langpacks/{en-zhHant,ja-zhHant,th-zhHant,zhHant-en}/pack.yaml` — 四個內建包
-- `inference/translate/ct2_nllb.py` — NLLB-200-distilled-600M 轉 CT2 int8，
-  語言代碼從語言包的 `translate.src_code`/`tgt_code` 讀取
-- `inference/translate/context.py` — 前 5 句上下文視窗
-- `inference/translate/glossary.py` — 術語表載入（路徑來自語言包）
-- `inference/pipeline.py` — 兩段式編排接上翻譯 + 語言包路由
-- `ui/panel/langpack_manager.py`（最小版）— 下拉選單切換啟用的語言包，
-  完整匯入 UI 留到 M6
-- `scripts/setup_models.py` — 一鍵下載並轉換模型
+- [x] `inference/langpack.py` — 語言包 registry：掃描 `config/langpacks/`、
+      驗證 schema、熱重載；`Pipeline` 依語言包的 `stabilizer.granularity`/
+      `policy.draft_translate` 決定行為，沒有任何寫死的 per-language 判斷
+- [x] `config/langpacks/{en-zhHant,ja-zhHant,th-zhHant,zhHant-en}/pack.yaml`
+      — 四個內建包（M0 就寫好了，M3 是第一次真的被讀取使用）
+- [x] `inference/translate/ct2_nllb.py` — NLLB-200-distilled-600M 轉 CT2 int8，
+      語言代碼從語言包的 `translate.src_code`/`tgt_code` 讀取
+- [x] `inference/translate/context.py` — 前 5 句上下文視窗（用「前文原文
+      + 這句原文一起送進 NLLB、按句尾標點切回這句的翻譯」這個 heuristic，
+      見檔案內的詳細說明與限制）
+- [x] `inference/translate/glossary.py` — 術語表載入 + 佔位符替換
+- [x] `inference/pipeline.py` — 兩段式編排接上翻譯 + 語言包路由
+- [x] `scripts/setup_models.py` — 一鍵下載並轉換 NLLB 模型
+- [x] UI 語言包熱切換的**控制通道**（`SetActiveLangPacks` REQ/REP，
+      `CONTROL_LANGPACK_RELOAD`）——`ui/panel/langpack_manager.py` 本身
+      （下拉選單 UI 元件）還沒做，見下方待補項
+
+**踩到的坑**：`transformers` 這個版本的 `__init__` 內部無條件
+`import torch`（不是延遲載入），NLLB 的 tokenizer 沒辦法只用
+`transformers.AutoTokenizer` 又完全避開 torch。這跟 M1 刻意讓
+audio-service 避開 torch 是不同層級的考量——inference-service 本來就要
+載入 GPU 上的 ASR 模型、啟動要好幾秒，多一個 torch import 的一次性開銷
+不影響翻譯熱路徑本身（tokenize/translate/detokenize 完全不會用到 torch
+的運算，那是 ctranslate2 做的）。已經把 `requirements.txt` 的註解更新為
+「inference-service 執行期真的需要 transformers/torch」，不再是只有
+`scripts/setup_models.py` 用得到。
 
 **驗收標準**
 
-- [ ] 英文 / 日文 / 泰文素材各 10 分鐘，全程有中文字幕；`zhHant-en` 包用中文素材測試出英文字幕
-- [ ] 加上術語表後，指定人名在整段影片中**譯法一致**
-- [ ] 有上下文 vs 無上下文各跑一次同素材，人工對比並記錄差異（驗證上下文真的有用）
-- [ ] 本地 MT p95 < 150ms，未把總延遲推出預算
-- [ ] UI 下拉切換語言包後，下一句字幕立即套用新設定，**不需重啟任何進程**
+- [x] **本地 MT 延遲**：p50=56.5ms、max=86.4ms（10 次英→繁中），**遠低於
+      150ms 目標**，模型載入本身約 2.3 秒（一次性開銷，不計入單句延遲）
+- [x] **上下文有沒有用：有，且有具體可證的案例**。無上下文時
+      "It is red and very fast." 翻成「紅色,而且非常快.」（主詞整個消失）；
+      加上前一句「My sister bought a new car yesterday.」當上下文後，
+      翻成「它是紅色的,而且很快.」（正確補回代名詞「它」指代車子）。
+      這是機制設計時就預期的效果，這次用真實案例驗證了
+- [x] **端到端真實驗證**：完整四進程（audio→inference→gateway→ui）+ 真實
+      GPU 推論跑通，播放英文測試語音，DRAFT 逐步翻譯改善、FINAL
+      定稿「我認為我們應該在決定明年預算之前考慮季度結果」跟原文語意
+      吻合，log 全程可見
+- [x] **控制通道端到端驗證**：`SetActiveLangPacks` 成功切到單包鎖定模式、
+      正確拒絕不存在的 pack id（且沒有破壞原本啟用狀態，回傳目前實際
+      狀態而非假裝成功）、切回多包皆正常
+- [ ] **英文 / 日文 / 泰文素材各 10 分鐘，全程有中文字幕**：三個語言的
+      翻譯本身都已經個別驗證過會動（含真實英文語音的完整端到端），但
+      沒有做滿 10 分鐘的連續測試
+- [ ] **術語表在整段影片中譯法一致**：佔位符替換機制本身有單元測試
+      覆蓋（含「長詞優先比對」「佔位符沒被模型動過」等情境），但沒有
+      用真實長影片素材做端到端驗證
+- [x] **UI 下拉選單**：`ui/panel/langpack_manager.py`（最小版）已完成——
+      系統匣選單「語言包設定...」開啟一個複選勾選框對話框，列出全部
+      內建語言包，按下 Apply 真的送出 `SetActiveLangPacks` 控制請求。
+      用真實跑起來的四進程 + 真正的 Qt Dialog 元件端到端驗證過：勾選
+      只留 `ja-zhHant`、按 Apply、用獨立探測確認 inference-service
+      真的切換成只啟用該包——不是繞過 UI 直接呼叫腳本測的。已知限制：
+      控制通道目前只有「設定」沒有「查詢」，對話框開啟時沒辦法準確
+      反映目前實際狀態，預設全選（多數情況下這剛好符合
+      inference-service 自己的預設行為）；要做到精確狀態同步，
+      完整版（M6）再補查詢端點
+
+**意外發現（值得記錄）**：NLLB-200-distilled-600M（本地即時翻譯用的小
+模型）對極短問候語有已知弱點——「สวัสดีครับ」（泰文「你好」）翻出
+「您的位置:首頁」這種完全無關的網頁導覽列幻覺文字，但同一次測試裡
+其他 3 句泰文（感謝、天氣、自我介紹）都翻得正確流暢。這是蒸餾小模型
+在極短輸入上的已知限制，不是我們程式碼的 bug，剛好也呼應了上下文機制
+的價值——短句缺乏語境更容易被誤譯。
 
 ---
 

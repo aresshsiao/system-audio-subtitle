@@ -134,6 +134,16 @@ def main() -> int:
     edit_action.toggled.connect(window.set_edit_mode)
     menu.addAction(edit_action)
 
+    def open_langpack_manager() -> None:
+        from ui.panel.langpack_manager import LangPackManagerDialog
+
+        dialog = LangPackManagerDialog()
+        dialog.exec()
+
+    langpack_action = QAction("語言包設定...")
+    langpack_action.triggered.connect(open_langpack_manager)
+    menu.addAction(langpack_action)
+
     menu.addSeparator()
     quit_action = QAction("結束")
     quit_action.triggered.connect(app.quit)
