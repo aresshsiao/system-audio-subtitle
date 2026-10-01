@@ -360,44 +360,110 @@ UI 面板本身的實機視覺（只用假的列舉/請求函式做過元件測�
 
 ---
 
-## M5 — 雲端精修、降級與可觀測性
+## M5 — 雲端精修、降級與可觀測性 ✅ 已完成（缺真實雲端供應商驗證）
 
 **目標**：品質上限拉高，並確保跟不上時優雅降級而非崩潰。
 
-- `inference/translate/llm_api.py` — 3~5 句批次重譯，POLISHED 靜默替換
-- 斷網 / 額度用盡 → 自動退回本地，功能不中斷
-- `inference/degrade.py` — L0~L5 降級階梯 + 遲滯
-- `utils/metrics.py` — 分階段延遲直方圖、RTF、緩衝水位、丟幀數
-- 控制台面板顯示即時 metrics
+- [x] `inference/translate/llm_api.py` — OpenAI 相容端點；背景執行緒 3~4 句批次
+      重譯（滿批或 8 秒逾時就送），POLISHED 靜默替換；`CircuitBreaker` 熔斷
+      （連續 3 次失敗暫停 30s，指數退避至 300s，試探失敗立刻再熔斷）
+- [x] `inference/degrade.py` — L0~L5 階梯 + 遲滯（升級：間隔 > 目標×1.5 連 3 次；
+      恢復：解碼耗時 < 低一級升級門檻×0.7 連 20 次；升/降各有最短停留時間）
+- [x] `utils/metrics.py` — 滑動視窗直方圖（p50/p95/p99）、計數器、量表；
+      inference-service 每秒發布 `MetricsSnapshot`
+- [x] UI：`ui/panel/metrics_panel.py`（效能監控）、`ui/panel/cloud_polish.py`
+      （雲端精修開關，含同意對話框）；系統匣選單入口
+- [x] 降級接線：L1 影響定稿 beam、L2 影響暫定稿間隔、L3 關精修、L4 換備援模型
+      （需預先下載 `setup_models.py --degrade-model`，否則自動跳過）、L5 丟棄落後
+      超過 8 秒的句子
+
+**與原設計的差異**：L4 原寫 distil-large-v3，但它是**純英文**模型，日/泰文會壞，
+改為多語的 large-v3-turbo。
 
 **驗收標準**
 
-- [ ] 人工製造負載（同時跑 GPU 壓力測試），系統逐級降級而非丟幀，log 完整記錄
-- [ ] 拔網路線，精修自動停用，本地字幕不中斷
-- [ ] 精修預設**關閉**，開啟時 UI 明確提示內容會送往第三方
-- [ ] 精修後字幕替換是靜默的，不造成視覺跳動
+- [x] **人工製造負載，系統逐級降級而非丟幀，log 完整**（GPU 空閒時實測：audio+inference
+      真實服務，循環播放語音，基線 → 6 條執行緒的 Whisper-small 壓力 → 撤除）：
+      L0 → L1（log：「定稿落後 7.1s > 3s」）→ L2（「定稿落後 4.9s」），撤除壓力後
+      **逐級恢復** L2 → L1 → L0（log：「解碼耗時 0.54s，負載已回落」），每次升降都有
+      log 與 `degrade_transitions` 計數，無丟句（dropped=0）。L3~L5 與 L4 的觸發用接線
+      測試涵蓋（假 ASR 逐級升到 L5、丟棄落後句、參數還原）；L4 備援模型 large-v3-turbo
+      已預先下載，實測載入 2.4s、解碼 5.1s 音訊 146ms（多語），**但沒有在實機負載下
+      真的觸發過 L4 換模型**（壓力不夠大，只到 L2）
+- [x] **拔網路線，精修自動停用，本地字幕不中斷**（實機，本機假雲端伺服器）：階段 1
+      雲端正常 4 句 FINAL→POLISHED 全數成功；關掉伺服器後 50 秒內本地又產出 6 句 FINAL，
+      精修失敗 3 次後 log「連續失敗，暫停 30s（熔斷）」，`CloudPolishStatus.breaker_open=True`
+- [x] 精修預設關閉；開啟需同意對話框（明講目的主機）、面板持續顯示提示（元件測試涵蓋）
+- [x] 精修靜默替換：gateway 只廣播「目前顯示中那一句」的更新，舊句子的晚到精修只進
+      Session 歷史，不會蓋掉浮層
+- [ ] **真實雲端供應商相容性沒有驗證**（沒有金鑰；只對本機假伺服器測過請求格式、
+      各種失敗模式）
+
+**實機驗證抓到、並已修正的三個問題**
+
+1. **空閒機器上就掉到 L2**：原本用「暫定稿間隔 > 250ms×1.5」判過載，但暫定稿每次
+   重解碼整句，8 秒長句在空閒 GPU 上就要 ~450ms，系統一啟動就降級。改成絕對門檻
+   （間隔 > 1.0s 才算卡頓；恢復要解碼 < 0.6s，中間是遲滯帶）
+2. **只看暫定稿間隔抓不到真正的卡**：壓力下暫定稿間隔 p95 僅 ~1.0s，但定稿要等
+   **7 秒**才輪到處理。新增第二個訊號「定稿落後」（連續兩句 > 3s 升級，落後未降時
+   不恢復）
+3. **指標「最近」不是最近**：直方圖只限筆數（512），低頻事件（每句一筆）要一個多小時
+   才換完，壓力撤掉後面板還顯示 7 秒落後。改成同時限時間（120 秒）
+
+**已知限制**：降級階梯只能在解碼「之間」調參數，單次解碼卡死（遊戲把 GPU 佔滿時曾卡
+60 秒以上）它無能為力；面板會在 3 秒沒收到回報時警告。
+
+**順手修掉的 M3 遺留 bug**：`ui/app.py` 一直用 `Transcript.decode()` 解碼
+gateway 傳來的 `Subtitle`，欄位對不上會 TypeError，浮層在 M3 之後其實收不到字幕。
+已改成解 `Subtitle` 並顯示 `target_text`。
+
+**待補**：真實雲端供應商（需金鑰）；更大壓力下實機觸發 L3~L5/L4；UI 面板視覺實機確認。
 
 ---
 
-## M6 — 打磨與封裝
+## M6 — 打磨與封裝 ✅ 功能完成（乾淨機器安裝、打包版解碼待驗證）
 
-- `gateway/export.py` — SRT / VTT / 純文字匯出（用 `AudioSpan` 樣本數算時間軸）
-- 字幕整體偏移微調（±ms 熱鍵）
-- `config/profiles/` — anime / meeting / lecture / streaming-out 四套 preset
-- `ui/panel/langpack_manager.py`（完整版）— 匯入對話框（資料夾 / `.langpack.zip`）、
-  驗證錯誤訊息、多包複選啟用、單包鎖定模式
-- 歷史面板：逐句回看、複製、搜尋
-- 首次啟動精靈：偵測 GPU、下載模型、測試音源、選擇初始語言包
-- PyInstaller 打包 + 設定檔外置
+- [x] `gateway/export.py` — SRT / VTT / TXT 匯出（時間碼 = `AudioSpan` 樣本數 / 取樣率），
+      支援偏移、第一句歸零、雙語、CJK/拉丁折行；gateway 提供 `/export` `/history` `/history/clear`
+- [x] 偏移微調熱鍵 `Ctrl+Alt+,` / `Ctrl+Alt+.`（±100ms），與歷史面板數字欄共用同一份設定
+- [x] `config/profiles/` 四套 preset（anime / meeting / lecture / streaming-out）+
+      `runtime/profiles.py` 載入驗證 + 系統匣「情境 Profile」。**接線的欄位**：語言包、字體倍率、
+      結束時自動存逐字稿；雲端精修**只提示不代開**（隱私）。**沒有做**：ARCHITECTURE 原提到的
+      「更新頻率 / 暫定稿優先」旋鈕（延遲行為目前由降級階梯自動決定）
+- [x] 語言包管理完整版：開啟時**查詢**實際啟用狀態（補掉 M3 的「預設全選」限制）、自動路由 vs
+      鎖定單一包、匯入資料夾 / zip、移除、熱重載（`SetActiveLangPacks` 新增 `pack_ids=None` 查詢與
+      `reload`）；`inference/langpack_import.py` 匯入防線（純資料副檔名白名單、zip-slip、符號連結、
+      zip bomb 上限、id 字元集、不可蓋掉內建）
+- [x] 歷史面板：逐句回看、搜尋、複製、匯出、清除（`ui/panel/history.py`）
+- [x] 首次啟動精靈 / 環境檢查（`runtime/preflight.py` + `ui/panel/first_run.py`）：GPU、顯示記憶體、
+      模型、音訊裝置、連接埠、語言包，每個問題附「怎麼修」；第一次啟動自動跳出，選單可重開
+- [x] 一鍵啟動 `python -m launcher`（Supervisor 拉起服務 + UI）；打包設定 `packaging/sas.spec`、
+      `packaging/build.ps1`（one-dir，不含模型）
 
 **驗收標準**
 
-- [ ] 在一台乾淨的 Windows 機器上照 README 安裝，30 分鐘內可用
-- [ ] 匯出的 SRT 用播放器載入，時間軸與原影片對得上
-- [ ] **零程式碼新增語言**：手寫一個全新語言包（例如韓文 → 繁中，僅 `pack.yaml`
-      + 選用 glossary），透過 UI 匯入後可直接選用、產生字幕 —— 不改 `audio/`、
-      `inference/`、`ui/` 任何一行程式碼。這是驗證 §13 抽象是否成立的關鍵測試
-- [ ] 匯入格式錯誤的語言包（如缺必要欄位）時，UI 顯示明確錯誤而非崩潰
+- [~] 乾淨 Windows 機器 30 分鐘內可用：**沒有乾淨機器可驗證。** 已做的：PyInstaller 成功建出
+      `dist/SystemAudioSubtitle/`（2.3GB，不含模型）；打包版 launcher 實測拉起 audio / gateway /
+      inference / UI，**打包版的 inference 在 28 秒內載入 large-v3（CUDA DLL 打包正確）並載入 NLLB**，
+      gateway 與 UI 正常連線。**但打包版的實際解碼沒驗證成功**：測試當下使用者正在玩 3D 遊戲
+      （GPU 97%），第一次解碼卡了 77 秒，無法判斷是打包問題還是 GPU 被搶。需要在 GPU 空閒時重跑
+- [x] **匯出的 SRT 時間軸與實際播放對得上**：已知播放時刻的音檔（用行程級擷取隔離），預測
+      13.18–21.18s，SRT 實際 13.34–21.34s，**誤差 +0.17s**（含 winsound 啟動延遲）
+- [x] **零程式碼新增語言**：手寫的韓文→繁中包（`docs/examples/langpacks/ko-zhHant/`，只有
+      pack.yaml + glossary.tsv + hallucination.txt）。實機：**執行中的 inference-service** 匯入 →
+      `reload` → 鎖定 / 多包並存全部成功、服務沒重啟；既有 `Pipeline` 依包宣告路由（單元測試，
+      術語表佔位符生效）；真的 NLLB 用包的代碼 `kor_Hang→zho_Hant` 翻出可讀中文
+      （「안녕하세요, 오늘 회의를 시작하겠습니다」→「您好，我們今天開始會議」）。
+      不改 `audio/` `inference/` `ui/` 任何一行。**沒有韓文語音，所以韓文 ASR 未實測**
+- [x] 匯入格式錯誤的包，UI 顯示明確錯誤而非崩潰（缺欄位、未知引擎、schema 版本過新、YAML 壞掉、
+      路徑逃逸、含可執行檔、zip-slip、zip bomb、id 不合法、同名內建包——皆有測試；失敗時保留舊版、
+      不留殘渣）
+
+**實機驗證順手抓到的問題**：NLLB 對詞表外的字輸出 `<unk>`，直接出現在 SRT（「武林<unk>用了…」）
+→ 翻譯輸出丟掉 `<unk>`。
+
+**已知限制 / 待補**：乾淨機器安裝流程；打包版在 GPU 空閒時的實際解碼；UI 面板視覺實機確認
+（只有元件測試）；exe 目前保留主控台視窗、沒有安裝程式（Inno Setup 等）與簽章。
 
 ---
 

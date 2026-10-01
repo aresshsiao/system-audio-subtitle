@@ -16,14 +16,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from utils.gpu import ensure_cuda_dll_path
+from utils.paths import models_dir
 
 ensure_cuda_dll_path()
 
 import ctranslate2
 from transformers import AutoTokenizer
 
-DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "models" / "nllb-200-distilled-600M-ct2"
+DEFAULT_MODEL_DIR = models_dir() / "nllb-200-distilled-600M-ct2"
 NLLB_HF_TOKENIZER_NAME = "facebook/nllb-200-distilled-600M"
+
+
+def drop_unk_tokens(tokens: list[str]) -> list[str]:
+    return [t for t in tokens if t != "<unk>"]
 
 
 class Ct2NllbTranslator:
@@ -65,5 +70,8 @@ class Ct2NllbTranslator:
         )
         # 輸出的第一個 token 是 target_prefix 指定的目標語言代碼本身，
         # 要去掉才是真正的譯文 token 序列。
-        output_tokens = results[0].hypotheses[0][1:]
+        # 詞表裡沒有的字（罕見人名用字等）模型會輸出 `<unk>`，直接顯示在字幕/SRT 上
+        # 很難看（M6 實測 SRT 裡出現「武林<unk>用了…」），丟掉這個 token，
+        # 寧可少一個字也不要露出內部標記。
+        output_tokens = drop_unk_tokens(results[0].hypotheses[0][1:])
         return self._tokenizer.convert_tokens_to_string(output_tokens).strip()

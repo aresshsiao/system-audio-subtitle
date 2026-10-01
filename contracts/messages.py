@@ -269,7 +269,8 @@ class SetActiveLangPacks(Message):
     切換後要能確認 inference-service 真的收到了、套用了——不是發出去就算。
     """
 
-    pack_ids: list[str]
+    pack_ids: list[str] | None = None  # None = 只查詢目前啟用集合，不改變任何設定
+    reload: bool = False  # True = 先重新掃描語言包目錄（剛匯入新包時用），再套用 pack_ids
 
 
 @dataclass(frozen=True)

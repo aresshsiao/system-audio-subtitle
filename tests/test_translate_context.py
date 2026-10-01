@@ -64,3 +64,10 @@ def test_extract_current_translation_no_sentence_boundary_returns_whole() -> Non
     ctx = TranslationContext()
     out = ctx.extract_current_translation("沒有標點的一整段文字", num_context_sentences=1)
     assert out == "沒有標點的一整段文字"
+
+
+def test_drop_unk_tokens_removes_internal_marker() -> None:
+    from inference.translate.ct2_nllb import drop_unk_tokens
+
+    assert drop_unk_tokens(["這次", "<unk>", "用了"]) == ["這次", "用了"]
+    assert drop_unk_tokens([]) == []

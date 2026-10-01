@@ -27,6 +27,19 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
+def command_for_module(module: str) -> list[str]:
+    """啟動 `module` 的指令列。
+
+    一般執行：`python -m <module>`。PyInstaller 打包後 `sys.executable` 是打包出來的
+    exe 本身，不能再 `-m`，改成 `<exe> --module <module>`，由 `launcher.py` 轉去
+    `runpy` 執行——所以四個進程仍然是完全獨立的 OS 進程（崩潰隔離不變），只是
+    共用同一個 exe。
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--module", module]
+    return [sys.executable, "-m", module]
+
+
 @dataclass(frozen=True)
 class RestartPolicy:
     """指數退避重啟策略。"""
@@ -114,7 +127,7 @@ class Supervisor:
 
     def _spawn(self, proc: ManagedProcess) -> None:
         logger.info("starting %s (%s)", proc.name, proc.module)
-        proc._popen = subprocess.Popen([sys.executable, "-m", proc.module])
+        proc._popen = subprocess.Popen(command_for_module(proc.module))
         proc._started_at = time.monotonic()
 
     def _monitor_loop(self) -> None:

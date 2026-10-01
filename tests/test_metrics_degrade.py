@@ -60,14 +60,14 @@ def make(clock: FakeClock, **kw) -> DegradeController:
 def overload(ctl: DegradeController, clock: FakeClock, n: int) -> None:
     for _ in range(n):
         clock.advance(1.0)
-        ctl.observe_draft(interval_s=ctl.params.draft_interval_s * 2, decode_s=0.6)
+        ctl.observe_draft(interval_s=2.0, decode_s=1.8)
 
 
 def test_single_slow_draft_does_not_escalate() -> None:
     clock = FakeClock()
     ctl = make(clock)
     clock.advance(10)
-    assert ctl.observe_draft(interval_s=1.0, decode_s=0.9) is None
+    assert ctl.observe_draft(interval_s=2.0, decode_s=1.8) is None
     assert ctl.observe_draft(interval_s=0.25, decode_s=0.1) is None
     assert ctl.level == DegradeLevel.L0_NORMAL
 
@@ -130,9 +130,9 @@ def test_hysteresis_prevents_flapping_at_the_boundary() -> None:
 
     for _ in range(200):
         clock.advance(1.0)
-        # 間隔剛好達標（不觸發升級），但解碼耗時 0.3s 高於恢復門檻
-        # （低一級升級門檻 0.375s × 0.7 = 0.26s）：不夠鬆，不恢復
-        ctl.observe_draft(interval_s=ctl.params.draft_interval_s, decode_s=0.3)
+        # 遲滯帶：間隔 0.85s 沒過升級門檻（1.0s），解碼耗時 0.8s 也沒低於恢復門檻
+        # （0.6s）——不升也不降
+        ctl.observe_draft(interval_s=0.85, decode_s=0.8)
     assert ctl.level == level
     assert (ctl.transitions_up, ctl.transitions_down) == (ups, downs)
 
@@ -142,8 +142,69 @@ def test_min_dwell_blocks_immediate_second_step() -> None:
     ctl = DegradeController(clock=clock, min_dwell_up_s=100.0)
     clock.advance(200)
     for _ in range(3):
-        ctl.observe_draft(interval_s=1.0, decode_s=0.9)
+        ctl.observe_draft(interval_s=2.0, decode_s=1.8)
     assert ctl.level == DegradeLevel.L1_FINAL_BEAM_DOWN
     for _ in range(10):  # 級別剛變動，停留時間還沒到
-        ctl.observe_draft(interval_s=1.0, decode_s=0.9)
+        ctl.observe_draft(interval_s=2.0, decode_s=1.8)
     assert ctl.level == DegradeLevel.L1_FINAL_BEAM_DOWN
+
+
+def test_idle_machine_with_long_utterances_stays_at_l0() -> None:
+    """迴歸測試（M5 實機驗證踩到）：GPU 完全空閒時，8 秒長句的暫定稿解碼要 ~450ms、
+    實際間隔 ~550ms。這是正常狀態，不能被當成過載——舊版用「間隔 > 250ms×1.5」
+    當門檻，系統一啟動就掉到 L2。"""
+    clock = FakeClock()
+    ctl = make(clock)
+    for _ in range(500):
+        clock.advance(0.6)
+        assert ctl.observe_draft(interval_s=0.55, decode_s=0.47) is None
+    assert ctl.level == DegradeLevel.L0_NORMAL
+
+
+def test_sustained_final_lag_escalates_even_when_draft_interval_looks_fine() -> None:
+    """實機負載測試：暫定稿間隔 p95 ~1.0s（沒過門檻），定稿卻落後 7 秒才處理。"""
+    clock = FakeClock()
+    ctl = make(clock)
+    clock.advance(10)
+    assert ctl.observe_final_lag(7.0) is None  # 單次不動
+    assert ctl.observe_final_lag(7.4) == DegradeLevel.L1_FINAL_BEAM_DOWN
+    assert ctl.observe_draft(interval_s=0.6, decode_s=0.5) is None
+
+
+def test_single_lag_spike_or_normal_lag_does_not_escalate() -> None:
+    clock = FakeClock()
+    ctl = make(clock)
+    clock.advance(10)
+    for lag in (0.5, 2.9, 0.6, 3.5, 0.7, 3.2, 0.5):  # 偶發超標、沒有連續
+        assert ctl.observe_final_lag(lag) is None
+    assert ctl.level == DegradeLevel.L0_NORMAL
+
+
+def test_no_recovery_while_final_lag_is_still_high() -> None:
+    clock = FakeClock()
+    ctl = make(clock)
+    overload(ctl, clock, 6)
+    level = ctl.level
+    ctl.observe_final_lag(2.0)  # 還沒降到 3s 的一半（1.5s）以下
+    for _ in range(100):
+        clock.advance(1.0)
+        ctl.observe_draft(interval_s=0.3, decode_s=0.05)
+    assert ctl.level == level
+    ctl.observe_final_lag(0.5)
+    for _ in range(100):
+        clock.advance(1.0)
+        ctl.observe_draft(interval_s=0.3, decode_s=0.05)
+    assert ctl.level < level
+
+
+def test_histogram_forgets_samples_older_than_max_age() -> None:
+    clock = FakeClock()
+    h = Histogram(max_age_s=60.0, clock=clock)
+    h.observe(7000.0)  # 壓力期間的慢樣本
+    clock.advance(30)
+    h.observe(500.0)
+    assert h.summary().max == 7000.0
+    clock.advance(45)  # 慢樣本已是 75 秒前
+    assert h.summary().max == 500.0
+    clock.advance(100)
+    assert h.summary().count == 0

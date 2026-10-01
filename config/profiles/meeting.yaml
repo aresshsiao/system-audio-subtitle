@@ -1,0 +1,7 @@
+# 會議：英文為主。結束時自動存逐字稿。
+id: meeting
+display_name: "會議（英文 → 繁中）"
+langpack_ids: [en-zhHant]
+font_scale: 1.0
+cloud_polish_hint: false
+autosave_transcript: true

@@ -16,6 +16,7 @@ import math
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -46,17 +47,32 @@ def _percentile(sorted_values: list[float], q: float) -> float:
 
 
 class Histogram:
-    def __init__(self, window: int = 512) -> None:
-        self._samples: deque[float] = deque(maxlen=window)
+    """同時受「筆數」與「時間」兩個上限約束：最多 `window` 筆、且只保留最近
+    `max_age_s` 秒。只用筆數的話，低頻事件（例如每句定稿一筆、約 5~10 秒一筆）
+    的 512 筆窗口要一個多小時才會換完——M5 實機負載測試時，壓力早就撤掉了，
+    面板上的「定稿落後 p95」還停在壓力期間的 7 秒。"""
+
+    def __init__(
+        self,
+        window: int = 512,
+        max_age_s: float = 120.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._samples: deque[tuple[float, float]] = deque(maxlen=window)
+        self._max_age_s = max_age_s
+        self._clock = clock
         self._lock = threading.Lock()
 
     def observe(self, value: float) -> None:
         with self._lock:
-            self._samples.append(value)
+            self._samples.append((self._clock(), value))
 
     def summary(self) -> HistogramSummary:
+        cutoff = self._clock() - self._max_age_s
         with self._lock:
-            values = sorted(self._samples)
+            while self._samples and self._samples[0][0] < cutoff:
+                self._samples.popleft()
+            values = sorted(v for _t, v in self._samples)
         if not values:
             return HistogramSummary(0, 0.0, 0.0, 0.0, 0.0)
         return HistogramSummary(

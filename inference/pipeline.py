@@ -72,6 +72,11 @@ class Pipeline:
         self._glossary_cache: dict[str, Glossary] = {}
         self._blacklist_cache: dict[str, frozenset[str]] = {}
 
+    def clear_caches(self) -> None:
+        """語言包熱重載後呼叫：同 id 的包可能被新版取代，術語表/黑名單要重讀。"""
+        self._glossary_cache.clear()
+        self._blacklist_cache.clear()
+
     def set_asr_engine(self, engine: ASREngine) -> None:
         """降級階梯 L4 換模型 / 恢復時用。"""
         self._asr = engine

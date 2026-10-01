@@ -1,0 +1,7 @@
+# 動畫：日文為主。字體放大一點，方便離螢幕稍遠時閱讀。
+id: anime
+display_name: "動畫（日文 → 繁中）"
+langpack_ids: [ja-zhHant]
+font_scale: 1.15
+cloud_polish_hint: true      # 對白長、上下文重要，建議到「雲端精修」自行開啟（不會自動開）
+autosave_transcript: false

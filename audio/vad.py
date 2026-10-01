@@ -27,11 +27,13 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
+from utils.paths import models_dir
+
 FRAME_SAMPLES = 512  # 16kHz 下固定 32ms，模型硬性要求，不可變
 CONTEXT_SAMPLES = 64
 SAMPLE_RATE = 16000
 
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "silero_vad.onnx"
+DEFAULT_MODEL_PATH = models_dir() / "silero_vad.onnx"
 
 
 class SileroVAD:

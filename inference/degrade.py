@@ -14,13 +14,22 @@
 GPU/模型，所以能用假的時鐘與觀測值把升降級與遲滯完整測過。真正套用參數
 （換 beam、換模型）是 inference/service.py 的事。
 
-**判定訊號**：暫定稿「實際間隔」（連續兩次暫定稿解碼的起點間距）> 目前級別
-目標間隔 × 1.5，連續 N 次才升一級（單次超標可能只是一次 GC 或長句，不代表
-持續過載）。**降級的恢復**不能看間隔本身（間隔的下限就是目前目標間隔，
-負載回落了也看不出來），所以看「解碼耗時」相對於**低一級**目標間隔的餘裕。
+**判定訊號**：暫定稿「實際間隔」（連續兩次暫定稿解碼的起點間距）> 絕對門檻
+`overload_interval_s`（預設 1.0s：字幕已經肉眼可見地卡住），連續 N 次才升一級
+（單次超標可能只是一次 GC 或長句，不代表持續過載）。**降級的恢復**看「解碼耗時」
+< `recover_decode_s`（預設 0.6s）連續 N 次。兩個門檻之間（0.6~1.0s）是遲滯帶：
+既不升也不降，避免在邊界反覆震盪；每次級別變動後另有最短停留時間。
 
-**遲滯**：每次級別變動後有最短停留時間（升級短、恢復長），且恢復門檻
-（解碼耗時 < 低一級升級門檻 × 0.7）比升級門檻嚴，避免在邊界反覆震盪。
+**第二個訊號：定稿排隊延遲**（同樣是 M5 實機負載測試補的）：GPU 被壓力程式佔滿時，
+暫定稿間隔 p95 只到 ~1.0s，但**定稿要等 7 秒以上才輪到處理**——使用者看到的是字幕
+晚了好幾秒，而暫定稿間隔這個訊號完全沒抓到。所以每句定稿開始處理時，量「句末到現在」
+的落後時間，連續兩句 > `overload_lag_s`（3s）就升級；落後還沒降下來時也不允許恢復。
+
+**為什麼暫定稿間隔用絕對門檻，不是「間隔 > 目標 250ms × 1.5」**（M5 實機驗證時修正）：
+暫定稿每次都要重新解碼「從句首到現在」整段音訊，成本隨句子變長而增加——
+GPU 完全空閒時，8 秒長句的一次暫定稿解碼就要 ~450ms。原本以 250ms 目標推算的
+門檻（375ms）在**空閒機器上**就會被長句觸發，系統一啟動就掉到 L2，「L0 正常」
+形同虛設。250ms 是節奏目標，不是過載判準；過載該以使用者可感知的卡頓為準。
 
 **L4 與 ARCHITECTURE.md 原設計的差異**：原文寫 large-v3 → distil-large-v3，
 但 distil-large-v3 是**純英文**模型，換上去日文/泰文會直接壞掉。這裡換成
@@ -74,8 +83,10 @@ class DegradeController:
         self,
         *,
         l4_available: bool = False,
-        up_ratio: float = 1.5,
-        down_margin: float = 0.7,
+        overload_interval_s: float = 1.0,
+        recover_decode_s: float = 0.6,
+        overload_lag_s: float = 3.0,
+        lag_up_count: int = 2,
         up_count: int = 3,
         down_count: int = 20,
         min_dwell_up_s: float = 3.0,
@@ -83,8 +94,12 @@ class DegradeController:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.l4_available = l4_available
-        self._up_ratio = up_ratio
-        self._down_margin = down_margin
+        self._overload_interval_s = overload_interval_s
+        self._recover_decode_s = recover_decode_s
+        self._overload_lag_s = overload_lag_s
+        self._lag_up_count = lag_up_count
+        self._lag_over_streak = 0
+        self._last_lag_s = 0.0
         self._up_count = up_count
         self._down_count = down_count
         self._min_dwell_up_s = min_dwell_up_s
@@ -125,24 +140,16 @@ class DegradeController:
         `interval_s`：這次解碼起點與上一次解碼起點的間距（同一句話內）。
         `decode_s`：這次解碼本身耗時。
         """
-        target = self.params.draft_interval_s
         dwell = self._clock() - self._changed_at
 
-        if interval_s > target * self._up_ratio:
+        if interval_s > self._overload_interval_s:
             self._over_streak += 1
             self._under_streak = 0
         else:
             self._over_streak = 0
-            # 恢復訊號：假設回到低一級，還會不會再度觸發升級？低一級的升級門檻
-            # 是「間隔 > 目標 × up_ratio」，解碼耗時要明顯低於這條線
-            # （× down_margin）才算有餘裕——比升級門檻嚴，這就是遲滯。
-            lower = self._next_down()
-            if lower is not None:
-                lower_target = params_for(lower, l4_available=self.l4_available).draft_interval_s
-                if decode_s < lower_target * self._up_ratio * self._down_margin:
-                    self._under_streak += 1
-                else:
-                    self._under_streak = 0
+            lag_ok = self._last_lag_s < self._overload_lag_s / 2
+            if self._next_down() is not None and decode_s < self._recover_decode_s and lag_ok:
+                self._under_streak += 1
             else:
                 self._under_streak = 0
 
@@ -150,12 +157,27 @@ class DegradeController:
             nxt = self._next_up()
             if nxt is not None:
                 return self._move(
-                    nxt, reason=f"間隔 {interval_s:.2f}s > 目標 {target:.2f}s×{self._up_ratio}"
+                    nxt, reason=f"暫定稿間隔 {interval_s:.2f}s > {self._overload_interval_s:.1f}s"
                 )
         if self._under_streak >= self._down_count and dwell >= self._min_dwell_down_s:
             nxt = self._next_down()
             if nxt is not None:
                 return self._move(nxt, reason=f"解碼耗時 {decode_s:.2f}s，負載已回落")
+        return None
+
+    def observe_final_lag(self, lag_s: float) -> DegradeLevel | None:
+        """每句定稿開始處理時呼叫：`lag_s` = 這句話說完到現在過了多久。"""
+        self._last_lag_s = lag_s
+        if lag_s > self._overload_lag_s:
+            self._lag_over_streak += 1
+            self._under_streak = 0
+        else:
+            self._lag_over_streak = 0
+        dwell = self._clock() - self._changed_at
+        if self._lag_over_streak >= self._lag_up_count and dwell >= self._min_dwell_up_s:
+            nxt = self._next_up()
+            if nxt is not None:
+                return self._move(nxt, reason=f"定稿落後 {lag_s:.1f}s > {self._overload_lag_s:.0f}s")
         return None
 
     def _move(self, new_level: DegradeLevel, *, reason: str) -> DegradeLevel:
@@ -168,5 +190,6 @@ class DegradeController:
         self._changed_at = self._clock()
         self._over_streak = 0
         self._under_streak = 0
+        self._lag_over_streak = 0
         logger.warning("降級階梯 %s → %s（%s）", old.name, new_level.name, reason)
         return new_level

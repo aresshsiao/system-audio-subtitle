@@ -18,3 +18,7 @@ models/
 .vscode/
 .idea/
 Thumbs.db
+
+# PyInstaller 產物
+dist/
+build/

@@ -1,0 +1,32 @@
+# 範例語言包：韓文 → 繁體中文
+# 這個包是「零程式碼新增語言」的示範：整個檔案夾只有資料，沒有任何程式碼。
+# 匯入方式：系統匣 → 語言包設定 → 匯入語言包...，選這個資料夾（或壓成 zip）。
+schema_version: 1
+id: ko-zhHant
+display_name: "韓文 → 繁體中文"
+version: "1.0.0"
+
+src_lang: ko
+tgt_lang: zh-Hant
+
+asr:
+  engine: faster-whisper
+  model: large-v3
+  hallucination_blacklist: hallucination.txt
+
+stabilizer:
+  granularity: word   # 韓文用空格分詞
+
+policy:
+  draft_translate: false   # 韓文也是 SOV 語序，跟日文一樣：暫定稿先翻常常整句意思反過來
+  line_break: space
+
+translate:
+  local_engine: ct2-nllb
+  src_code: kor_Hang        # NLLB 的 FLORES-200 代碼
+  tgt_code: zho_Hant
+  cloud_engine: llm-api
+  glossary: glossary.tsv
+
+typography:
+  font_hint: "Noto Sans TC"

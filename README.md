@@ -25,14 +25,25 @@ python -m venv .venv
 `faster-whisper` 的 ASR 模型（large-v3）會在 `inference-service` 第一次啟動時
 自動從 Hugging Face 下載並快取，不需要另外手動處理。
 
-## 3. 啟動（四個進程，各開一個終端機視窗，照順序啟動）
+## 3. 啟動
+
+**一鍵啟動**（推薦）：
+
+```powershell
+.venv\Scripts\python -m launcher
+```
+
+會拉起 audio-service / inference-service / gateway（任何一個崩潰會自動重啟），並開啟
+UI；關閉 UI（系統匣 →「結束」）就一起收掉。第一次啟動會自動跳出「環境檢查」，
+告訴你 GPU、模型、音訊裝置是否就緒與怎麼修。
+
+**手動分開啟動**（除錯用，四個進程各開一個終端機視窗）：
 
 ```powershell
 # 1. audio-service — 擷取系統輸出音訊、VAD 切句
 .venv\Scripts\python -m audio.service
 
 # 2. inference-service — ASR 轉錄（第一次啟動要等模型載入，約 4~8 秒）
-$env:SAS_ASR_LANGUAGE = "en"   # 見下方「語言設定」，留空 = 自動偵測
 .venv\Scripts\python -m inference.service
 
 # 3. gateway — 字幕廣播
@@ -67,29 +78,41 @@ $env:SAS_ASR_LANGUAGE = "en"   # 見下方「語言設定」，留空 = 自動�
 |---|---|
 | 顯示 / 隱藏字幕 | 熱鍵 `Ctrl+Alt+S`，或系統匣圖示右鍵選單 |
 | 拖曳字幕到想要的位置 | 熱鍵 `Ctrl+Alt+E` 進入編輯模式（此時會暫時關閉點擊穿透），拖曳後再按一次退出 |
+| 匯出字幕的偏移 ±100ms | 熱鍵 `Ctrl+Alt+,` / `Ctrl+Alt+.`（見下方「匯出字幕」） |
+| 音源、語言包、情境、雲端精修、效能監控、字幕歷史、環境檢查 | 系統匣圖示右鍵選單 |
 | 結束程式 | 系統匣圖示右鍵 →「結束」 |
 
 **平常（非編輯模式）滑鼠點擊會直接穿透浮層**，可以正常操作底下播放器的控制列，
 不會被字幕擋住。
 
-## 5. 語言設定
+### 匯出字幕（SRT / VTT / 純文字）
 
-`inference-service` 用環境變數控制辨識語言：
+系統匣 →「字幕歷史與匯出...」：逐句回看、搜尋、複製，並匯出成 SRT / VTT / TXT
+（可選雙語、偏移）。匯出的是**定稿 / 精修後**的字幕，暫定稿不會進檔案。
 
-```powershell
-$env:SAS_ASR_LANGUAGE = "en"   # 英文；也可以 "ja"（日文）、"th"（泰文）
-$env:SAS_ASR_LANGUAGE = ""     # 留空或不設 = Whisper 自動偵測語言
-```
+**時間軸的原點是「開始擷取」的那一刻，不是影片開頭。** 想做成可對應影片的字幕檔：
+擷取開始後再從頭播放影片，然後勾「第一句從 0 開始」，或用偏移熱鍵 / 數字欄微調。
+（實測：已知播放時刻的音檔，匯出的 SRT 與實際播放時間誤差約 0.2 秒。）
 
-還有兩個進階環境變數（通常不需要動）：
+### 情境 Profile
 
-```powershell
-$env:SAS_STABILIZER_GRANULARITY = "char"  # 日/泰文建議用 char，英文用預設的 word
-$env:SAS_HALLUCINATION_BLACKLIST = "config\langpacks\ja-zhHant\hallucination.txt"
-```
+系統匣 →「情境 Profile」：一鍵套用「動畫 / 會議 / 課程 / 直播對外」——決定啟用哪些語言包、
+字體大小、結束時是否自動存逐字稿。Profile 只**建議**是否開雲端精修，不會替你開
+（那會把內容送往第三方）。自訂 Profile：在 `%APPDATA%\SystemAudioSubtitle\profiles\` 放 yaml，
+格式參考 `config/profiles/`。
 
-> 語言包（`config/langpacks/`）目前只是資料檔案，`inference-service`
-> 還沒有真正讀它們做自動路由——這是 M3 要接上的部分，見 ROADMAP.md。
+## 5. 語言設定：語言包
+
+翻譯方向由**語言包**決定（`config/langpacks/`）：內建 英→繁中、日→繁中、泰→繁中、繁中→英。
+系統匣 →「語言包設定...」：
+
+- **自動偵測**：可複選多個包，依偵測到的語言自動路由（例如直播混著日文與英文）
+- **鎖定單一包**：強制所有語音都當作該語言，關掉自動偵測（語言已知時更準）
+- **匯入語言包**：資料夾或 `.zip`。**新增一種語言不需要改任何程式碼**，只要一份 `pack.yaml`
+  （可附術語表 `glossary.tsv`、幻覺黑名單 `hallucination.txt`）。範例：
+  `docs/examples/langpacks/ko-zhHant/`（韓文 → 繁中）。匯入後勾選「套用」即可，不用重啟
+- 匯入的包放在 `%APPDATA%\SystemAudioSubtitle\langpacks\`；語言包是**純資料**，含程式碼或
+  可執行檔的包會被拒絕，格式錯誤時對話框會說明哪裡不對
 
 ### 雲端精修（選用，預設關閉）與效能監控
 
@@ -114,14 +137,17 @@ $env:SAS_LLM_API_KEY  = "..."
 降級階梯 L4 要用的備援模型需事先下載（不然 L4 停用）：
 `.venv/Scripts/python.exe scripts/setup_models.py --degrade-model`
 
-## 6. 已知限制（現在這個階段）
+## 6. 已知限制
 
 - **預設擷取整個輸出裝置**：背景音樂、通知音效也會被辨識。要只翻譯單一應用程式
-  的聲音，用系統匣選單的「音源選擇...」切到行程級擷取（見上方「選擇音源」）。
-  Tier 2 失敗時會自動退回整個輸出裝置並在面板上以黃字警告
+  的聲音，用「音源選擇...」切到行程級擷取。Tier 2 失敗時會自動退回整個輸出裝置並警告
 - **行程重開後的自動重建**只依行程名稱比對，同名的多個行程可能選錯（見 ROADMAP.md M4）
-- **沒有安裝精靈**：要照上面手動啟動四個進程
-- **沒有設定面板**：字型大小、顏色目前只能改程式碼
+- **GPU 被其他程式佔滿時字幕會嚴重延遲**（例如開著 3D 遊戲）：降級階梯只能在解碼「之間」
+  調參數，單次解碼被拖到幾十秒它沒辦法。「效能監控」面板會告訴你目前的狀態
+- 翻譯品質受 NLLB-600M 限制：短句與語序較不同的語言（日/韓）偶有錯譯；長影片人名一致性
+  只有術語表能保證
+- 字幕顏色、樣式目前還不能在 UI 調整（字體大小可用 Profile 的倍率）
+- 打包成單一發行資料夾（PyInstaller）見 `packaging/`，狀態見 ROADMAP.md M6
 
 ## 7. 疑難排解
 

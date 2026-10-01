@@ -126,6 +126,12 @@ def apply_degrade_params(rt: _Runtime, params: DegradeParams) -> None:
     rt.metrics.set_gauge("draft_interval_target_s", params.draft_interval_s)
 
 
+def _on_level_change(rt: _Runtime, new_level) -> None:
+    if new_level is not None:
+        apply_degrade_params(rt, rt.degrade.params)
+        rt.metrics.incr("degrade_transitions_total")
+
+
 def _attach_ring_buffer_with_retry() -> RingBufferReader:
     deadline = time.monotonic() + _RING_BUFFER_ATTACH_TIMEOUT_S
     last_error: Exception | None = None
@@ -239,7 +245,7 @@ def main() -> None:
         while True:
             control_req = langpack_control.poll_request(SetActiveLangPacks, timeout_ms=0)
             if control_req is not None:
-                _handle_langpack_request(control_req, registry, langpack_control)
+                langpack_control.reply(handle_langpack_request(control_req, registry, rt.pipeline))
 
             polish_req = polish_control.poll_request(SetCloudPolish, timeout_ms=0)
             if polish_req is not None:
@@ -277,23 +283,26 @@ def main() -> None:
         ring_reader.close()
 
 
-def _handle_langpack_request(
-    req: SetActiveLangPacks, registry: LangPackRegistry, control: Replier
-) -> None:
+def handle_langpack_request(
+    req: SetActiveLangPacks, registry: LangPackRegistry, pipeline: Pipeline | None = None
+) -> SetActiveLangPacksAck:
+    """語言包控制請求：`reload` 先重掃目錄（剛匯入的新包才看得到），`pack_ids`
+    為 None 只查詢目前啟用集合。"""
     try:
-        registry.set_enabled(req.pack_ids)
-        logger.info("語言包啟用集合已更新: %s", req.pack_ids)
-        control.reply(
-            SetActiveLangPacksAck(success=True, active_pack_ids=req.pack_ids, error=None)
+        if req.reload:
+            registry.reload()
+            if pipeline is not None:
+                pipeline.clear_caches()
+        if req.pack_ids is not None:
+            registry.set_enabled(req.pack_ids)
+            logger.info("語言包啟用集合已更新: %s", req.pack_ids)
+        return SetActiveLangPacksAck(
+            success=True, active_pack_ids=[p.id for p in registry.enabled_packs], error=None
         )
     except KeyError as e:
         logger.warning("SetActiveLangPacks 失敗: %s", e)
-        control.reply(
-            SetActiveLangPacksAck(
-                success=False,
-                active_pack_ids=[p.id for p in registry.enabled_packs],
-                error=str(e),
-            )
+        return SetActiveLangPacksAck(
+            success=False, active_pack_ids=[p.id for p in registry.enabled_packs], error=str(e)
         )
 
 
@@ -402,6 +411,7 @@ def _handle_utterance_event(
 
     lag_s = (rt.ring_reader.write_total - utt.span.end_sample) / _SAMPLE_RATE
     rt.metrics.observe("final_queue_lag_ms", lag_s * 1000.0)
+    _on_level_change(rt, rt.degrade.observe_final_lag(lag_s))
     remaining = None if (active is None or active.utt_id == utt.utt_id) else active
 
     if rt.degrade.params.drop_stale and lag_s > STALE_LAG_S:
@@ -474,10 +484,7 @@ def _run_draft_pass(
 
     if interval_s is not None:
         rt.metrics.observe("draft_interval_ms", interval_s * 1000.0)
-        new_level = rt.degrade.observe_draft(interval_s=interval_s, decode_s=decode_s)
-        if new_level is not None:
-            apply_degrade_params(rt, rt.degrade.params)
-            rt.metrics.incr("degrade_transitions_total")
+        _on_level_change(rt, rt.degrade.observe_draft(interval_s=interval_s, decode_s=decode_s))
 
     if decoded is None:
         return

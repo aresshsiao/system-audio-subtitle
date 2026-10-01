@@ -1,0 +1,7 @@
+# 課程/演講：精準優先。語言包依素材手動選（留空 = 不改動目前的語言包設定）。
+id: lecture
+display_name: "課程 / 演講（精準優先）"
+langpack_ids: []
+font_scale: 1.0
+cloud_polish_hint: true
+autosave_transcript: true

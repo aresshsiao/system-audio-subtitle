@@ -1,0 +1,7 @@
+# 自己開直播：對外掛英文字幕（繁中 → 英）。
+id: streaming-out
+display_name: "直播對外（繁中 → 英）"
+langpack_ids: [zhHant-en]
+font_scale: 1.2
+cloud_polish_hint: false
+autosave_transcript: false

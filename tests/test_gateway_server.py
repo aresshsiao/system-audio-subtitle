@@ -168,3 +168,47 @@ def test_stale_revision_is_not_broadcast(gateway_process) -> None:
                 ws.recv(timeout=1.5)
     finally:
         publisher.close()
+
+
+def test_export_and_history_endpoints_over_http(gateway_process) -> None:
+    import json
+    import urllib.error
+    import urllib.request
+
+    publisher = Publisher(BUS_ENDPOINTS[INFERENCE_SUBTITLE])
+    base = f"http://127.0.0.1:{GATEWAY_PORT}"
+    try:
+        final = Subtitle(
+            utt_id="ex1",
+            revision=1,
+            state=SubtitleState.FINAL,
+            span=AudioSpan(16000, 48000),
+            src_lang="ja",
+            tgt_lang="zh-Hant",
+            pack_id="ja-zhHant",
+            source_text="こんにちは",
+            target_text="你好",
+            engine=EngineKind.TRANSLATE_CT2_NLLB,
+        )
+        deadline = time.monotonic() + 8.0
+        history = []
+        while time.monotonic() < deadline and not history:  # slow joiner：重送到 gateway 收到為止
+            publisher.publish(INFERENCE_SUBTITLE, final)
+            time.sleep(0.3)
+            history = json.loads(urllib.request.urlopen(f"{base}/history", timeout=3).read())
+        assert history and history[0]["utt_id"] == "ex1"
+
+        srt = urllib.request.urlopen(f"{base}/export?fmt=srt", timeout=3).read().decode("utf-8")
+        assert srt == "1\n00:00:01,000 --> 00:00:03,000\n你好\n"
+        vtt = urllib.request.urlopen(f"{base}/export?fmt=vtt&offset_ms=500&bilingual=true", timeout=3)
+        assert vtt.headers["Content-Type"].startswith("text/vtt")
+        assert "00:00:01.500 --> 00:00:03.500\n你好\nこんにちは" in vtt.read().decode("utf-8")
+
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(f"{base}/export?fmt=docx", timeout=3)
+        assert exc.value.code == 400
+
+        urllib.request.urlopen(urllib.request.Request(f"{base}/history/clear", method="POST"), timeout=3)
+        assert json.loads(urllib.request.urlopen(f"{base}/history", timeout=3).read()) == []
+    finally:
+        publisher.close()

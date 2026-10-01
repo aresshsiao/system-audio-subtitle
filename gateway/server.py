@@ -26,7 +26,8 @@ if sys.platform == "win32":
 
 import zmq
 import zmq.asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from contracts.messages import Subtitle
 from contracts.topics import (
@@ -36,6 +37,7 @@ from contracts.topics import (
     GATEWAY_WS_PATH,
     INFERENCE_SUBTITLE,
 )
+from gateway.export import ExportOptions, export_subtitles
 from gateway.session import Session
 from utils.logging import setup_logging
 
@@ -65,6 +67,45 @@ async def ws_subtitles(websocket: WebSocket) -> None:
     finally:
         _clients.discard(websocket)
         logger.info("client disconnected, total=%d", len(_clients))
+
+
+_EXPORT_MEDIA_TYPES = {"srt": "application/x-subrip", "vtt": "text/vtt", "txt": "text/plain"}
+
+
+@app.get("/export")
+def export_endpoint(
+    fmt: str = "srt",
+    offset_ms: int = 0,
+    bilingual: bool = False,
+    rebase: bool = False,
+    include_drafts: bool = False,
+) -> PlainTextResponse:
+    """匯出目前 Session 的字幕。見 gateway/export.py 關於時間軸原點的說明。"""
+    if fmt not in _EXPORT_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail=f"fmt 必須是 {sorted(_EXPORT_MEDIA_TYPES)}")
+    opts = ExportOptions(
+        fmt=fmt,  # type: ignore[arg-type]
+        offset_ms=offset_ms,
+        bilingual=bilingual,
+        rebase=rebase,
+        include_drafts=include_drafts,
+    )
+    text = export_subtitles(session.history(), opts)
+    return PlainTextResponse(text, media_type=f"{_EXPORT_MEDIA_TYPES[fmt]}; charset=utf-8")
+
+
+@app.get("/history")
+def history_endpoint() -> JSONResponse:
+    """逐句歷史（每句的最新狀態），給 UI 的歷史面板用。"""
+    import json
+
+    return JSONResponse([json.loads(s.encode()) for s in session.history()])
+
+
+@app.post("/history/clear")
+def clear_history_endpoint() -> dict[str, bool]:
+    session.clear()
+    return {"ok": True}
 
 
 async def _broadcast(subtitle: Subtitle) -> None:

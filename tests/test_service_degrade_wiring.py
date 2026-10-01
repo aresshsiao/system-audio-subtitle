@@ -95,14 +95,17 @@ def run_draft_loop(rt: _Runtime, n_passes: int) -> None:
             time.sleep(0.005)
 
 
+# 測試用的過載門檻縮小（0.3s），讓 0.4s 的假解碼就算過載，不用真的等 1 秒以上
+FAST = dict(overload_interval_s=0.3, up_count=2, l4_available=False)
+
+
 def test_slow_decode_escalates_and_applies_params_to_pipeline_and_polish() -> None:
-    asr = SlowASR(delay_s=0.4)  # 目標間隔 0.25s，0.4s > 0.25×1.5 → 過載
-    rt = make_runtime(asr, FakeRing(write_total=16000 * 5))
+    asr = SlowASR(delay_s=0.4)
+    rt = make_runtime(asr, FakeRing(write_total=16000 * 5), **FAST)
     assert rt.pipeline.final_beam_size == 5 and rt.polish.allowed_by_degrade
 
-    run_draft_loop(rt, n_passes=8)
+    run_draft_loop(rt, n_passes=6)  # 第 2 次起才有間隔量測：L0→L1（第 3 次）→L2（第 5 次）
 
-    # 0.4s 的解碼在 L2（目標 0.5s）就撐得住了：停在 L2，不會繼續降
     assert rt.degrade.level == DegradeLevel.L2_DRAFT_INTERVAL_UP
     assert rt.pipeline.final_beam_size == 1  # L1 的效果還在（累積）
     assert rt.polish.allowed_by_degrade  # L3 才會關
@@ -110,9 +113,9 @@ def test_slow_decode_escalates_and_applies_params_to_pipeline_and_polish() -> No
     assert rt.metrics.snapshot()["gauges"]["draft_interval_target_s"] == 0.5
 
 
-def test_heavier_load_reaches_l3_polish_off_then_l5_without_l4_when_uncached() -> None:
-    asr = SlowASR(delay_s=0.8)  # 連 L2 的 0.5s×1.5=0.75s 都超過
-    rt = make_runtime(asr, FakeRing(write_total=16000 * 5), l4_available=False, up_count=2)
+def test_sustained_overload_reaches_l3_polish_off_then_l5_skipping_uncached_l4() -> None:
+    asr = SlowASR(delay_s=0.4)
+    rt = make_runtime(asr, FakeRing(write_total=16000 * 5), **FAST)
 
     run_draft_loop(rt, n_passes=10)
 

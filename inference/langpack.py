@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 
 from contracts.langpack_schema import LangPackValidationError, LanguagePack, load_and_validate
+from utils.paths import user_langpacks_dir
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,13 @@ DEFAULT_LANGPACKS_DIR = Path(__file__).resolve().parent.parent / "config" / "lan
 
 
 class LangPackRegistry:
-    """掃描一或多個目錄，載入、驗證所有語言包，提供查表與熱重載。"""
+    """掃描一或多個目錄，載入、驗證所有語言包，提供查表與熱重載。
+
+    預設掃描「內建」與「使用者匯入」兩個目錄（內建在前：同 id 時內建優先，
+    使用者匯入的包蓋不掉內建的）。"""
 
     def __init__(self, search_dirs: list[Path] | None = None) -> None:
-        self._search_dirs = search_dirs or [DEFAULT_LANGPACKS_DIR]
+        self._search_dirs = search_dirs or [DEFAULT_LANGPACKS_DIR, user_langpacks_dir()]
         self._packs: dict[str, LanguagePack] = {}
         self._enabled_ids: set[str] = set()
 
